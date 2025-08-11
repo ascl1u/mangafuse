@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Protocol
-
-
-class Translator(Protocol):
-    def translate_batch(self, texts: List[str]) -> List[str]:
-        ...
+from typing import List
 
 
 class GeminiTranslator:
@@ -39,7 +34,7 @@ class GeminiTranslator:
                 + "\n".join(f"- {t}" for t in chunk)
             )
             resp = self._client.models.generate_content(model="gemini-2.5-flash", contents=[prompt])
-            lines = [l.strip("- ").strip() for l in (resp.text or "").splitlines() if l.strip()]
+            lines = [line_text.strip("- ").strip() for line_text in (resp.text or "").splitlines() if line_text.strip()]
             if len(lines) < len(chunk):
                 lines += [""] * (len(chunk) - len(lines))
             out.extend(lines[: len(chunk)])

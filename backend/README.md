@@ -163,7 +163,7 @@ Local setup guide (PowerShell, summarized; see `plan.md` for exact commands):
    - `pip install -U pip`
    - `pip install --index-url https://download.pytorch.org/whl/cpu -r requirements-ai.txt`
 2. Place assets:
-   - Fonts: `assets/fonts/AnimeAce.ttf`
+   - Fonts: `assets/fonts/animeace2_reg.ttf`
    - Model: `assets/models/speech_bubble_yolov8m_seg.pt`
    - Samples: `assets/samples/test_page.jpg`
 3. Create `backend/.env` (use `GOOGLE_API_KEY=...` for translation).

@@ -1,3 +1,1 @@
-# API package
-
-
+"""API package."""

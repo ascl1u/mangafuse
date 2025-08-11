@@ -26,7 +26,6 @@ async def lifespan(app: FastAPI):  # noqa: D401 - FastAPI lifespan signature
 
 
 def create_app() -> FastAPI:
-    settings = get_settings()
     app = FastAPI(title="MangaFuse API", version="0.1.0", lifespan=lifespan)
 
     # CORS for local development and future frontend

@@ -1,15 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol
-
 import cv2
 import numpy as np
-
-
-class OcrEngine(Protocol):
-    def run(self, image: np.ndarray) -> str:  # image can be gray or BGR
-        ...
-
 
 class MangaOcrEngine:
     """Thin wrapper around manga-ocr with lazy initialization."""

@@ -4,22 +4,22 @@ MangaFuse AI Pipeline — Phase 2 Step 2.1: Bubble Segmentation (CLI wrapper)
 This CLI wraps the pipeline code located under app.pipeline.* modules.
 Behavior, flags, and outputs remain identical.
 """
+# ruff: noqa: E402
 
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
+import json
+import os
+import cv2
+from dotenv import load_dotenv
 
 # Ensure the backend package root is on sys.path when running from repo root
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
-
-import json
-import os
-
-import cv2
 
 from app.pipeline.io import ensure_dir, read_image_bgr, save_png
 from app.pipeline.masks import save_masks
@@ -33,7 +33,6 @@ from app.pipeline.translator import GeminiTranslator
 from app.pipeline.inpaint import run_inpainting
 from app.pipeline.typeset import BubbleText, render_typeset
 from app.pipeline.text_mask import build_text_inpaint_mask
-from dotenv import load_dotenv
 
 
 def parse_args() -> argparse.Namespace:
