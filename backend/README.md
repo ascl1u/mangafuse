@@ -28,6 +28,9 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 # Celery task limit (seconds)
 CELERY_TASK_TIME_LIMIT=120
+
+# Phase 2 (local AI script) — set this for translation stage
+# GOOGLE_API_KEY=
 ```
 Notes:
 - The app will automatically load `backend/.env` (see `app/core/config.py`).
@@ -142,4 +145,29 @@ docker stop mangafuse-redis
 docker rm mangafuse-redis
 ```
 
+
+## Phase 2 Step 2.0 — Local AI Setup (no code execution here)
+
+This repository now includes placeholders and a separate dependency file for the AI pipeline per `plan.md` Step 2.0. Do not mix these into the Phase 1 runtime environment.
+
+What was added:
+- `backend/requirements-ai.txt` — pinned AI deps (CPU-only PyTorch, Ultralytics, manga-ocr, simple-lama-inpainting, google-genai)
+- `backend/scripts/` — location for the pipeline script `mangafuse_pipeline.py` (to be implemented in later steps)
+- Directory markers to keep structure under version control: `assets/`, `artifacts/`, and subfolders
+
+Local setup guide (PowerShell, summarized; see `plan.md` for exact commands):
+1. Create and activate a separate venv, then install AI deps:
+   - `cd backend`
+   - `python -m venv .venv-ai`
+   - `.\.venv-ai\Scripts\Activate.ps1`
+   - `pip install -U pip`
+   - `pip install --index-url https://download.pytorch.org/whl/cpu -r requirements-ai.txt`
+2. Place assets:
+   - Fonts: `assets/fonts/AnimeAce.ttf`
+   - Model: `assets/models/speech_bubble_yolov8m_seg.pt`
+   - Samples: `assets/samples/test_page.jpg`
+3. Create `backend/.env` (use `GOOGLE_API_KEY=...` for translation).
+4. Outputs will go to `artifacts/` when the pipeline is implemented in later steps.
+
+Note: We are not executing any commands here. This section documents the expected local setup only, per Step 2.0.
 
