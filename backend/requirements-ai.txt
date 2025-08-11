@@ -9,6 +9,7 @@ numpy
 pillow
 opencv-python
 shapely
+python-dotenv
 
 # Segmentation (YOLOv8)
 torch
