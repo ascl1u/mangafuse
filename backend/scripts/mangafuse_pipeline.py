@@ -30,6 +30,9 @@ from app.pipeline.crops import tight_crop_from_mask
 from app.pipeline.preprocess import binarize_for_ocr
 from app.pipeline.ocr_engine import MangaOcrEngine
 from app.pipeline.translator import GeminiTranslator
+from app.pipeline.inpaint import run_inpainting
+from app.pipeline.typeset import BubbleText, render_typeset
+from app.pipeline.text_mask import build_text_inpaint_mask
 from dotenv import load_dotenv
 
 
@@ -54,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Overwrite existing artifacts")
 
     # Future flags (parsed but unused in 2.1)
-    parser.add_argument("--font", type=str, default=str(Path("assets/fonts/AnimeAce.ttf")), help="Path to TTF font")
+    parser.add_argument("--font", type=str, default=str(Path("assets/fonts/animeace2_reg.ttf")), help="Path to TTF font")
     parser.add_argument("--use-placeholder-text", action="store_true", help="Bypass OCR/translation during typeset stage")
     return parser.parse_args()
 
@@ -83,6 +86,7 @@ def main() -> None:
         overlay_path = out_dir / "segmentation_overlay.png"
         masks_dir = out_dir / "masks"
         combined_mask_path = masks_dir / "all_mask.png"
+        text_mask_path = masks_dir / "text_mask.png"
         json_path = out_dir / "text.json"
 
         if not args.force and overlay_path.exists() and combined_mask_path.exists() and json_path.exists():
@@ -204,10 +208,132 @@ def main() -> None:
         )
         return
 
-    if stage in ("inpaint", "typeset"):
-        raise NotImplementedError(
-            f"Stage '{stage}' is not implemented yet. Complete Step 2.3 for inpaint/typeset."
-        )
+    # Ensure OCR + translation are executed during the end-to-end run
+    if stage == "all":
+        json_path = out_dir / "text.json"
+        masks_dir = out_dir / "masks"
+
+        if not json_path.exists():
+            raise FileNotFoundError("text.json not found. Run segmentation stage first.")
+
+        data = read_text_json(json_path)
+        bubbles = data.get("bubbles", [])
+        if bubbles:
+            image_bgr = read_image_bgr(image_path)
+            # OCR pass (idempotent with --force)
+            ocr_engine = MangaOcrEngine()
+            for rec in bubbles:
+                has_ja = isinstance(rec.get("ja_text"), str) and rec["ja_text"].strip() != ""
+                if has_ja and not args.force:
+                    continue
+                bubble_id = int(rec.get("id"))
+                polygon = rec.get("polygon") or []
+                mask_path = masks_dir / f"{bubble_id}.png"
+                crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_path, polygon)
+                try:
+                    bin_img = binarize_for_ocr(crop_bgr)
+                    ja_text = ocr_engine.run(bin_img)
+                except Exception:
+                    ja_text = ocr_engine.run(crop_bgr)
+                rec["ja_text"] = ja_text
+            save_text_records(json_path, bubbles)
+
+            # Translation pass (will raise clearly if GOOGLE_API_KEY missing)
+            api_key = os.getenv("GOOGLE_API_KEY")
+            translator = GeminiTranslator(api_key=api_key or "")
+            indices, texts = [], []
+            for idx, rec in enumerate(bubbles):
+                ja = (rec.get("ja_text") or "").strip()
+                has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip() != ""
+                if not ja:
+                    continue
+                if has_en and not args.force:
+                    continue
+                indices.append(idx)
+                texts.append(ja)
+            if texts:
+                en_list = translator.translate_batch(texts)
+                for i, en in zip(indices, en_list):
+                    bubbles[i]["en_text"] = en
+            save_text_records(json_path, bubbles)
+
+    if stage in ("inpaint", "typeset", "all"):
+        # Paths
+        masks_dir = out_dir / "masks"
+        combined_mask_path = masks_dir / "all_mask.png"
+        text_mask_path = masks_dir / "text_mask.png"
+        cleaned_path = out_dir / "cleaned.png"
+        final_path = out_dir / "final.png"
+        json_path = out_dir / "text.json"
+        font_path = Path(args.font)
+
+        # Inpainting stage (runs for both inpaint and typeset when needed)
+        if stage in ("inpaint", "all", "typeset"):
+            if not args.force and cleaned_path.exists():
+                print(json.dumps({"stage": "inpaint", "status": "skip", "reason": "artifact_exists"}))
+            else:
+                # Prefer a text-only inpainting mask; build it if missing
+                if args.force or not text_mask_path.exists():
+                    if not json_path.exists():
+                        raise FileNotFoundError("text.json not found. Run segmentation stage first.")
+                    data = read_text_json(json_path)
+                    bubbles = data.get("bubbles", [])
+                    image_bgr = read_image_bgr(image_path)
+                    text_mask = build_text_inpaint_mask(image_bgr, masks_dir, bubbles)
+                    # Save mask for inspection
+                    save_png(text_mask_path, cv2.cvtColor(text_mask, cv2.COLOR_GRAY2BGR))
+
+                # Choose mask: use text_mask if non-empty else fall back to combined
+                use_mask_path = combined_mask_path
+                text_mask_gray = cv2.imread(str(text_mask_path), cv2.IMREAD_GRAYSCALE)
+                if text_mask_gray is not None and int(text_mask_gray.sum()) > 0:
+                    use_mask_path = text_mask_path
+
+                result_bgr = run_inpainting(image_path, use_mask_path)
+                save_png(cleaned_path, result_bgr)
+                print(json.dumps({"stage": "inpaint", "status": "ok"}))
+            if stage == "inpaint":
+                return
+
+        # Typesetting stage
+        if stage in ("typeset", "all"):
+            if not cleaned_path.exists():
+                raise FileNotFoundError("cleaned.png not found. Run inpaint stage first.")
+            if not json_path.exists():
+                raise FileNotFoundError("text.json not found. Run segmentation/translation stages first.")
+
+            data = read_text_json(json_path)
+            bubbles = data.get("bubbles", [])
+            if args.use_placeholder_text:
+                records = [
+                    BubbleText(bubble_id=int(rec.get("id")), polygon=rec.get("polygon") or [], text="Hello there!")
+                    for rec in bubbles
+                ]
+            else:
+                # Choose en_text if present, else ja_text else empty
+                records = []
+                for rec in bubbles:
+                    text = (rec.get("en_text") or rec.get("ja_text") or "").strip()
+                    records.append(
+                        BubbleText(
+                            bubble_id=int(rec.get("id")),
+                            polygon=rec.get("polygon") or [],
+                            text=text,
+                        )
+                    )
+
+            debug_overlay_path = out_dir / "typeset_debug.png" if args.debug else None
+            render_typeset(
+                cleaned_path=cleaned_path,
+                output_final_path=final_path,
+                records=records,
+                font_path=font_path,
+                margin_px=6,
+                debug=args.debug,
+                debug_overlay_path=debug_overlay_path,
+            )
+            print(json.dumps({"stage": "typeset", "status": "ok", "num_bubbles": len(records)}))
+            return
 
 
 if __name__ == "__main__":
