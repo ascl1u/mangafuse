@@ -1,0 +1,7 @@
+design_doc.md
+*plan.md
+roadmap.md
+__pycache__/
+*.py[cod]
+*$py.class
+.env
