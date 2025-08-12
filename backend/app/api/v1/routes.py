@@ -1,13 +1,15 @@
-from typing import Any, Dict
+from typing import Any, Dict, Literal
+
+import uuid
+from pathlib import Path
 
 import redis
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from celery.result import AsyncResult
 
 from app.core.config import get_settings
 from app.worker.celery_app import celery_app
-from app.worker.tasks import demo_task
 
 
 router = APIRouter(prefix="/api/v1")
@@ -43,10 +45,52 @@ def readyz() -> Dict[str, str]:
         raise HTTPException(status_code=503, detail=f"redis not reachable: {exc}")
 
 
-@router.post("/process", summary="Enqueue demo task", status_code=status.HTTP_202_ACCEPTED)
-def enqueue_process(req: ProcessRequest) -> Dict[str, str]:
-    """Enqueue a demo Celery task and return its task id."""
-    async_result = demo_task.delay(req.duration_s)
+@router.post("/process", summary="Upload an image and start processing", status_code=status.HTTP_202_ACCEPTED)
+async def enqueue_process(
+    file: UploadFile = File(...),
+    depth: Literal["cleaned", "full"] = Form(...),
+    debug: bool = Form(False),
+    force: bool = Form(False),
+) -> Dict[str, str]:
+    """Accept an image upload and enqueue the AI pipeline task.
+
+    Stores the upload under artifacts/uploads and triggers background processing.
+    """
+    # Resolve repo root -> artifacts/uploads
+    repo_root = Path(__file__).resolve().parents[4]
+    uploads_dir = repo_root / "artifacts" / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    # Derive a safe filename
+    original_name = file.filename or "upload"
+    ext = Path(original_name).suffix
+    if not ext:
+        # best-effort based on content-type
+        ct = (file.content_type or "").lower()
+        if "jpeg" in ct:
+            ext = ".jpg"
+        elif "png" in ct:
+            ext = ".png"
+        else:
+            ext = ".img"
+    saved_name = f"{uuid.uuid4().hex}{ext}"
+    saved_path = uploads_dir / saved_name
+
+    # Persist upload to disk
+    contents = await file.read()
+    with open(saved_path, "wb") as f:
+        f.write(contents)
+
+    # Enqueue processing task
+    async_result = celery_app.send_task(
+        "app.worker.tasks.process_page_task",
+        args=[str(saved_path)],
+        kwargs={
+            "depth": "full" if depth == "full" else "cleaned",
+            "debug": bool(debug),
+            "force": bool(force),
+        },
+    )
     return {"task_id": async_result.id}
 
 
@@ -55,9 +99,12 @@ def get_process_status(task_id: str) -> Dict[str, Any]:
     """Poll the status/result of a Celery task by id."""
     result = AsyncResult(task_id, app=celery_app)
     payload: Dict[str, Any] = {"task_id": task_id, "state": result.state}
+    # Include progress meta when available
+    info = result.info  # may carry {stage, progress}
+    if isinstance(info, dict) and ("stage" in info or "progress" in info):
+        payload["meta"] = {k: info.get(k) for k in ("stage", "progress")}
     if result.ready():
         if result.failed():
-            # result.result contains the exception info when failed
             payload["error"] = str(result.result)
         else:
             payload["result"] = result.result

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     celery_broker_url: Optional[str] = None
     celery_result_backend: Optional[str] = None
     celery_task_time_limit: int = 120
+    google_api_key: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
