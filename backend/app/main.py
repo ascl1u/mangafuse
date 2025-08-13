@@ -9,6 +9,7 @@ from pathlib import Path
 from app.api.v1.routes import router as api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.core.paths import get_artifacts_root, get_assets_root
 
 
 @asynccontextmanager
@@ -41,12 +42,10 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router)
 
-    # Serve artifacts/ for local verification (Step 3.1)
-    repo_root = Path(__file__).resolve().parents[2]  # backend/ -> repo root
-    artifacts_dir = repo_root / "artifacts"
+    # Serve artifacts/ for local verification (dev) and assets/ for font/model delivery
+    artifacts_dir = get_artifacts_root()
     app.mount("/artifacts", StaticFiles(directory=str(artifacts_dir), html=False), name="artifacts")
-    # Serve assets/ (fonts, models) for local development and editor previews
-    assets_dir = repo_root / "assets"
+    assets_dir = get_assets_root()
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir), html=False), name="assets")
     return app

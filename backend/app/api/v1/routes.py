@@ -1,29 +1,23 @@
-from typing import Any, Dict, Literal, List, Optional
+from typing import Any, Dict, Literal
 from pathlib import Path
-
+import re
 import uuid
-from pathlib import Path
 
 import redis
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from celery.result import AsyncResult
 
 from app.core.config import get_settings
 from app.worker.celery_app import celery_app
+from app.api.v1.schemas import ApplyEditsRequest
+from app.core.paths import get_uploads_dir, get_job_dir
 
 
 router = APIRouter(prefix="/api/v1")
 
 
-class ProcessRequest(BaseModel):
-    duration_s: int = 5
 
-
-@router.get("/", summary="Hello World")
-def hello_world() -> Dict[str, str]:
-    return {"message": "Hello World"}
 
 
 @router.get("/healthz", summary="Liveness probe")
@@ -59,23 +53,33 @@ async def enqueue_process(
     Stores the upload under artifacts/uploads and triggers background processing.
     """
     # Resolve repo root -> artifacts/uploads
-    repo_root = Path(__file__).resolve().parents[4]
-    uploads_dir = repo_root / "artifacts" / "uploads"
+    uploads_dir = get_uploads_dir()
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    # Derive a safe filename
-    original_name = file.filename or "upload"
-    ext = Path(original_name).suffix
-    if not ext:
-        # best-effort based on content-type
+    # Derive a safe, traceable filename: preserve a sanitized original base, ensure uniqueness
+    original_name = (file.filename or "upload").strip()
+    original_ext = Path(original_name).suffix.lower()
+    original_base = Path(original_name).stem or "upload"
+    # sanitize base: allow alnum, dot, underscore, dash; collapse others to '_'
+    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", original_base).strip("._-") or "upload"
+    # keep base reasonably short
+    safe_base = safe_base[:50]
+    # normalize/whitelist extension
+    allowed_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    if original_ext not in allowed_exts:
         ct = (file.content_type or "").lower()
-        if "jpeg" in ct:
+        if "jpeg" in ct or "jpg" in ct:
             ext = ".jpg"
         elif "png" in ct:
             ext = ".png"
+        elif "webp" in ct:
+            ext = ".webp"
         else:
+            # unknown; keep a neutral extension
             ext = ".img"
-    saved_name = f"{uuid.uuid4().hex}{ext}"
+    else:
+        ext = original_ext
+    saved_name = f"{uuid.uuid4().hex}_{safe_base}{ext}"
     saved_path = uploads_dir / saved_name
 
     # Persist upload to disk
@@ -113,16 +117,6 @@ def get_process_status(task_id: str) -> Dict[str, Any]:
     return payload
 
 
-class EditRecord(BaseModel):
-    id: int
-    en_text: Optional[str] = None
-    font_size: Optional[int] = None
-
-
-class ApplyEditsRequest(BaseModel):
-    edits: List[EditRecord]
-
-
 @router.post("/jobs/{task_id}/edits", summary="Persist edits and enqueue re-typeset", status_code=status.HTTP_202_ACCEPTED)
 def apply_edits(task_id: str, body: ApplyEditsRequest) -> Dict[str, str]:
     """Save edits and enqueue a background re-typeset job.
@@ -139,8 +133,7 @@ def apply_edits(task_id: str, body: ApplyEditsRequest) -> Dict[str, str]:
 
 @router.get("/jobs/{task_id}/exports", summary="Get export artifact URLs")
 def get_exports(task_id: str) -> Dict[str, Any]:
-    repo_root = Path(__file__).resolve().parents[4]
-    job_dir = repo_root / "artifacts" / "jobs" / task_id
+    job_dir = get_job_dir(task_id)
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="job not found")
     final = job_dir / "final.png"
@@ -167,8 +160,7 @@ def download_package(task_id: str):
     import io
     import zipfile
 
-    repo_root = Path(__file__).resolve().parents[4]
-    job_dir = repo_root / "artifacts" / "jobs" / task_id
+    job_dir = get_job_dir(task_id)
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="job not found")
 

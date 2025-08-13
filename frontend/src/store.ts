@@ -56,6 +56,7 @@ export type EditorBubble = {
   ja_text?: string
   en_text?: string
   font_size?: number
+  rect?: { x: number; y: number; w: number; h: number }
   crop_url?: string
 }
 
@@ -122,7 +123,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
     if (taskId) {
       try {
         localStorage.setItem(`mf_edits_${taskId}`, JSON.stringify(next))
-      } catch {}
+      } catch {
+        // ignore storage failures in MVP
+      }
     }
   },
   async loadEditor(taskId, result) {
@@ -137,7 +140,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
       try {
         const raw = localStorage.getItem(`mf_edits_${taskId}`)
         if (raw) saved = JSON.parse(raw)
-      } catch {}
+      } catch {
+        // ignore parse/storage failures
+      }
       // apply edits onto payload bubbles
       const bubbles = payload.bubbles.map((b) => {
         const e = saved[b.id]

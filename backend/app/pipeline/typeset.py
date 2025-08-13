@@ -7,6 +7,8 @@ from typing import List, Tuple, Optional
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageChops
 
+from .geometry import compute_inner_rect_axis_aligned
+
 
 @dataclass
 class BubbleText:
@@ -19,7 +21,7 @@ class BubbleText:
     font_size: Optional[int] = None
 
 
-def _polygon_bbox(polygon: List[List[float]]) -> Tuple[int, int, int, int]:
+def _outer_bbox(polygon: List[List[float]]) -> Tuple[int, int, int, int]:
     xs = [p[0] for p in polygon]
     ys = [p[1] for p in polygon]
     x0 = int(np.floor(min(xs)))
@@ -233,7 +235,7 @@ def render_typeset(
     debug: bool = False,
     debug_overlay_path: Optional[Path] = None,
     text_layer_output_path: Optional[Path] = None,
-) -> dict:
+) -> Tuple[dict, dict]:
     """Render English text onto cleaned page image.
 
     Uses polygon bounding boxes minus a margin as fitting regions. Saves final image.
@@ -250,16 +252,47 @@ def render_typeset(
     base_draw = ImageDraw.Draw(debug_img) if debug_img else None
 
     used_sizes: dict = {}
+    used_rects: dict = {}
     for rec in records:
         if not rec.polygon:
             continue
-        x0, y0, x1, y1 = _polygon_bbox(rec.polygon)
-        x0 += margin_px
-        y0 += margin_px
-        x1 -= margin_px
-        y1 -= margin_px
+
+        # Pass A: seed font size using outer bbox minus small pad (current margin)
+        obx0, oby0, obx1, oby1 = _outer_bbox(rec.polygon)
+        sx0 = obx0 + margin_px
+        sy0 = oby0 + margin_px
+        sx1 = obx1 - margin_px
+        sy1 = oby1 - margin_px
+        if sx1 <= sx0 or sy1 <= sy0:
+            continue
+
+        seed_size, _seed_lines = _draw_centered_text(
+            Image.new("RGBA", base.size, (0, 0, 0, 0)),
+            sx0,
+            sy0,
+            sx1,
+            sy1,
+            font_path,
+            rec.text,
+            rec.polygon,
+            debug=False,
+            preferred_font_size=rec.font_size,
+            text_layer=None,
+        )
+
+        # Pass B: margin = 1.2em based on seed size; compute inner rectangle via geometry helper
+        dynamic_margin = max(1, int(round(seed_size * 1.2)))
+        inner = compute_inner_rect_axis_aligned(rec.polygon, (base.size[0], base.size[1]), dynamic_margin)
+
+        # Fallback to seeded bbox if inner is unavailable
+        if inner is None:
+            x0, y0, x1, y1 = sx0, sy0, sx1, sy1
+        else:
+            x0, y0, x1, y1 = inner
+
         if x1 <= x0 or y1 <= y0:
             continue
+
         size_used, _lines = _draw_centered_text(
             base,
             x0,
@@ -274,9 +307,9 @@ def render_typeset(
             text_layer=text_layer_img,
         )
         used_sizes[rec.bubble_id] = int(size_used)
+        used_rects[rec.bubble_id] = {"x": int(x0), "y": int(y0), "w": int(max(1, x1 - x0)), "h": int(max(1, y1 - y0))}
         if debug and base_draw:
             base_draw.rectangle([x0, y0, x1, y1], outline=(0, 255, 0))
-            # Outline the polygon
             pts = [(int(p[0]), int(p[1])) for p in rec.polygon]
             for i in range(len(pts)):
                 a = pts[i]
@@ -288,6 +321,6 @@ def render_typeset(
         debug_img.save(debug_overlay_path)
     if text_layer_output_path is not None and text_layer_img is not None:
         text_layer_img.save(text_layer_output_path)
-    return used_sizes
+    return used_sizes, used_rects
 
 

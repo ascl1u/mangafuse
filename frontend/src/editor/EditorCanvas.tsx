@@ -106,10 +106,9 @@ export function EditorCanvas({ editor, selectedId, onSelect, edits, disabled }: 
             // live text
             const edit = edits[b.id] || {}
             const text = (edit.en_text ?? b.en_text ?? '').trim()
-            const fontSize = Math.max(6, Math.min(48, edit.font_size ?? b.font_size ?? 18))
-            const bbox = polygonBBox(poly)
-            const textX = bbox.x0 + bbox.w / 2
-            const textY = bbox.y0 + bbox.h / 2
+            const rect = b.rect
+              ? { x0: b.rect.x * scale, y0: b.rect.y * scale, w: Math.max(1, b.rect.w * scale), h: Math.max(1, b.rect.h * scale) }
+              : polygonBBox(poly)
             return (
               <Group key={b.id} onClick={() => !disabled && onSelect(b.id)}>
                 <Line
@@ -122,18 +121,31 @@ export function EditorCanvas({ editor, selectedId, onSelect, edits, disabled }: 
                   onMouseLeave={onLeave}
                 />
                 {text && (
-                  <KonvaText
-                    text={text}
-                    x={bbox.x0}
-                    y={bbox.y0}
-                    width={bbox.w}
-                    height={bbox.h}
-                    fontSize={fontSize}
-                    fontFamily="Anime Ace, Arial, sans-serif"
-                    align="center"
-                    verticalAlign="middle"
-                    fill="#000"
-                  />
+                  <Group
+                    clipFunc={(ctx) => {
+                      ctx.beginPath()
+                      for (let i = 0; i < points.length; i += 2) {
+                        const x = points[i]
+                        const y = points[i + 1]
+                        if (i === 0) ctx.moveTo(x, y)
+                        else ctx.lineTo(x, y)
+                      }
+                      ctx.closePath()
+                    }}
+                  >
+                    <KonvaText
+                      text={text}
+                      x={rect.x0}
+                      y={rect.y0}
+                      width={rect.w}
+                      height={rect.h}
+                      fontSize={Math.max(6, edit.font_size ?? b.font_size ?? 18)}
+                      fontFamily="Anime Ace, Arial, sans-serif"
+                      align="center"
+                      verticalAlign="middle"
+                      fill="#000"
+                    />
+                  </Group>
                 )}
               </Group>
             )
