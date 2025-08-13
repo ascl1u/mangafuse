@@ -45,6 +45,10 @@ def create_app() -> FastAPI:
     repo_root = Path(__file__).resolve().parents[2]  # backend/ -> repo root
     artifacts_dir = repo_root / "artifacts"
     app.mount("/artifacts", StaticFiles(directory=str(artifacts_dir), html=False), name="artifacts")
+    # Serve assets/ (fonts, models) for local development and editor previews
+    assets_dir = repo_root / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir), html=False), name="assets")
     return app
 
 

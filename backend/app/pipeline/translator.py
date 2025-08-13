@@ -28,7 +28,7 @@ class GeminiTranslator:
                 "Constraints:\n"
                 "- Output exactly one English line per input line, in the same order.\n"
                 "- Keep the English length roughly similar to the Japanese length.\n"
-                "- If a name appears, do not attempt a translation and output the English romaji'.\n"
+                "- If a name appears, do not attempt a translation and output the English romaji.\n"
                 "- If an explicit word appears, replace it with the neutral placeholder 'banana'.\n"
                 "- Output only the translations; no numbering, bullets, or extra commentary.\n\n"
                 + "\n".join(f"- {t}" for t in chunk)

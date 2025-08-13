@@ -220,9 +220,12 @@ def process_page_task(
                     bubble_id=int(rec.get("id")),
                     polygon=rec.get("polygon") or [],
                     text=text,
+                    font_size=(
+                        int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None
+                    ),
                 )
             )
-        render_typeset(
+        used_sizes = render_typeset(
             cleaned_path=cleaned_path,
             output_final_path=final_path,
             records=records,
@@ -230,7 +233,18 @@ def process_page_task(
             margin_px=6,
             debug=debug,
             debug_overlay_path=typeset_debug_path if debug else None,
+            text_layer_output_path=job_dir / "text_layer.png",
         )
+        # Persist computed font sizes back into text.json for parity with editor
+        try:
+            if used_sizes and isinstance(used_sizes, dict):
+                for rec in bubbles2:
+                    bid = int(rec.get("id"))
+                    if bid in used_sizes:
+                        rec["font_size"] = int(used_sizes[bid])
+                save_text_records(json_path, bubbles2)
+        except Exception:
+            pass
         stage_completed.append("typeset")
         _update("typeset_complete", 1.0)
 
@@ -252,10 +266,213 @@ def process_page_task(
     if debug and typeset_debug_path.exists():
         result["typeset_debug_url"] = _artifact_url(task_id, "typeset_debug.png")
 
+    # Write editor_payload.json for frontend editor (Step 3.3)
+    try:
+        data_for_editor = read_text_json(json_path)
+        bubbles_for_editor = data_for_editor.get("bubbles", [])
+        # Normalize records to include only expected fields
+        normalized: List[Dict[str, Any]] = []
+        # Ensure crops directory exists
+        crops_dir = job_dir / "crops"
+        ensure_dir(crops_dir)
+        for rec in bubbles_for_editor:
+            bubble_id = int(rec.get("id"))
+            polygon = rec.get("polygon") or []
+            # Save a pre-inpaint crop from the original image for reference in editor
+            try:
+                crop_bgr, _bbox = tight_crop_from_mask(image_bgr, masks_dir / f"{bubble_id}.png", polygon)
+                save_png(crops_dir / f"{bubble_id}.png", crop_bgr)
+                crop_url = _artifact_url(task_id, "crops", f"{bubble_id}.png")
+            except Exception:
+                crop_url = None  # non-fatal
+            normalized.append(
+                {
+                    "id": bubble_id,
+                    "polygon": polygon,
+                    "ja_text": rec.get("ja_text"),
+                    "en_text": rec.get("en_text"),
+                    "font_size": rec.get("font_size"),
+                    "crop_url": crop_url,
+                }
+            )
+        # Prefer final if exists else cleaned
+        # For editor, use cleaned as background to avoid double-rendering text
+        if cleaned_path.exists():
+            image_url = _artifact_url(task_id, "cleaned.png")
+        elif final_path.exists():
+            image_url = _artifact_url(task_id, "final.png")
+        else:
+            image_url = _artifact_url(task_id, "segmentation_overlay.png")
+        editor_payload = {
+            "image_url": image_url,
+            "width": int(width),
+            "height": int(height),
+            "bubbles": normalized,
+        }
+        editor_payload_path = job_dir / "editor_payload.json"
+        with open(editor_payload_path, "w", encoding="utf-8") as f:
+            json.dump(editor_payload, f, ensure_ascii=False, indent=2)
+        result["editor_payload_url"] = _artifact_url(task_id, "editor_payload.json")
+    except Exception as _e:  # noqa: BLE001 - non-fatal; editor may be unavailable
+        # Intentionally do not fail the task if editor payload cannot be written
+        pass
+
     logger.info("task_completed", extra={"task": "process_page_task", "result": result})
     return result
 
 
 __all__ = ["demo_task", "process_page_task"]
+
+
+@celery_app.task(bind=True, name="app.worker.tasks.apply_edits_task")
+def apply_edits_task(self, original_task_id: str, edits: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Apply user edits to an existing job and re-typeset the final image.
+
+    Args:
+        original_task_id: The job id of the original processing run (artifacts/jobs/{id}).
+        edits: List of { id: int, en_text?: str, font_size?: int } overrides.
+
+    Returns:
+        Dict payload with URLs to updated artifacts.
+    """
+    # Locate job directory and key artifact paths
+    repo_root = Path(__file__).resolve().parents[3]
+    job_dir = repo_root / "artifacts" / "jobs" / original_task_id
+    masks_dir = job_dir / "masks"
+    json_path = job_dir / "text.json"
+    cleaned_path = job_dir / "cleaned.png"
+    final_path = job_dir / "final.png"
+    text_layer_path = job_dir / "text_layer.png"
+    editor_payload_path = job_dir / "editor_payload.json"
+
+    if not cleaned_path.exists():
+        raise FileNotFoundError(f"cleaned image missing for job {original_task_id}")
+    if not json_path.exists():
+        raise FileNotFoundError(f"text.json missing for job {original_task_id}")
+
+    # Persist raw edits for audit/debugging
+    try:
+        with open(job_dir / "edits.json", "w", encoding="utf-8") as f:
+            json.dump(edits, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # Load records and apply overrides
+    data = read_text_json(json_path)
+    bubbles = data.get("bubbles", [])
+    by_id: Dict[int, Dict[str, Any]] = {}
+    for rec in bubbles:
+        try:
+            by_id[int(rec.get("id"))] = rec
+        except Exception:
+            continue
+    for e in edits:
+        try:
+            bid = int(e.get("id"))
+        except Exception:
+            continue
+        rec = by_id.get(bid)
+        if not rec:
+            continue
+        if isinstance(e.get("en_text"), str):
+            rec["en_text"] = e["en_text"]
+        if isinstance(e.get("font_size"), (int, float)):
+            rec["font_size"] = int(e["font_size"])  # candidate; will be normalized by typesetter
+
+    save_text_records(json_path, bubbles)
+
+    # Build BubbleText inputs with overrides
+    # Resolve font path (same default as process_page_task)
+    default_font = repo_root / "assets" / "fonts" / "animeace2_reg.ttf"
+    font = default_font
+
+    records: List[BubbleText] = []
+    for rec in bubbles:
+        text = (rec.get("en_text") or rec.get("ja_text") or "").strip()
+        records.append(
+            BubbleText(
+                bubble_id=int(rec.get("id")),
+                polygon=rec.get("polygon") or [],
+                text=text,
+                font_size=(int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None),
+            )
+        )
+
+    used_sizes = render_typeset(
+        cleaned_path=cleaned_path,
+        output_final_path=final_path,
+        records=records,
+        font_path=font,
+        margin_px=6,
+        debug=False,
+        debug_overlay_path=None,
+        text_layer_output_path=text_layer_path,
+    )
+
+    # Persist computed font sizes back into text.json
+    try:
+        if used_sizes and isinstance(used_sizes, dict):
+            for rec in bubbles:
+                bid = int(rec.get("id"))
+                if bid in used_sizes:
+                    rec["font_size"] = int(used_sizes[bid])
+            save_text_records(json_path, bubbles)
+    except Exception:
+        pass
+
+    # Update editor payload to include latest en_text/font_size
+    normalized: List[Dict[str, Any]] = []
+    for rec in bubbles:
+        bubble_id = int(rec.get("id"))
+        polygon = rec.get("polygon") or []
+        crop_url = None
+        crop_path = job_dir / "crops" / f"{bubble_id}.png"
+        if crop_path.exists():
+            crop_url = _artifact_url(original_task_id, "crops", f"{bubble_id}.png")
+        normalized.append(
+            {
+                "id": bubble_id,
+                "polygon": polygon,
+                "ja_text": rec.get("ja_text"),
+                "en_text": rec.get("en_text"),
+                "font_size": rec.get("font_size"),
+                "crop_url": crop_url,
+            }
+        )
+    image_url = _artifact_url(original_task_id, "cleaned.png") if cleaned_path.exists() else _artifact_url(original_task_id, "final.png")
+    editor_payload = {
+        "image_url": image_url,
+        "width": None,
+        "height": None,
+        "bubbles": normalized,
+    }
+    # Best-effort infer dimensions from cleaned image
+    try:
+        img = cv2.imread(str(cleaned_path))
+        if img is not None:
+            h, w = img.shape[:2]
+            editor_payload["width"] = int(w)
+            editor_payload["height"] = int(h)
+    except Exception:
+        pass
+    try:
+        with open(editor_payload_path, "w", encoding="utf-8") as f:
+            json.dump(editor_payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    result: Dict[str, Any] = {
+        "task_id": original_task_id,
+        "final_url": _artifact_url(original_task_id, "final.png") if final_path.exists() else None,
+        "text_layer_url": _artifact_url(original_task_id, "text_layer.png") if text_layer_path.exists() else None,
+        "editor_payload_url": _artifact_url(original_task_id, "editor_payload.json") if editor_payload_path.exists() else None,
+        "json_url": _artifact_url(original_task_id, "text.json") if json_path.exists() else None,
+        "cleaned_url": _artifact_url(original_task_id, "cleaned.png") if cleaned_path.exists() else None,
+    }
+    logger.info("task_completed", extra={"task": "apply_edits_task", "result": result})
+    return result
+
+
+__all__.append("apply_edits_task")
 
 

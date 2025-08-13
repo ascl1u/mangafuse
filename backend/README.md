@@ -87,33 +87,48 @@ irm http://127.0.0.1:8000/api/v1/readyz
 # If Redis is down or misconfigured: HTTP 503
 ```
 
-## 7) End-to-end background task flow
-Enqueue a demo task via API, then poll for completion.
+## 7) End-to-end job flow (upload → process → edits → exports)
+
+Start a processing job by uploading an image using `multipart/form-data` and optional form fields.
 
 ```powershell
-# Enqueue a 3-second task
-$resp = iwr -UseBasicParsing -Method POST -ContentType 'application/json' -Body '{ "duration_s": 3 }' http://127.0.0.1:8000/api/v1/process
+# Upload an image (depth: cleaned|full)
+$form = @{
+  file = Get-Item ..\assets\samples\test_page.jpg
+  depth = 'full'
+  debug = 'false'
+  force = 'false'
+}
+$resp = iwr -UseBasicParsing -Method POST -Form $form http://127.0.0.1:8000/api/v1/process
 $taskId = ($resp.Content | ConvertFrom-Json).task_id
 "Task ID: $taskId"
 
-# Poll until terminal state
+# Poll until done
 while ($true) {
   $r = irm "http://127.0.0.1:8000/api/v1/process/$taskId"
   $r
   if ($r.state -eq 'SUCCESS' -or $r.state -eq 'FAILURE') { break }
   Start-Sleep -Seconds 1
 }
-```
-Expected behavior:
-- API returns immediately with `{ task_id }` and HTTP 202.
-- Celery worker logs show `task_started` then `task_completed` after ~3 seconds.
-- Poll endpoint eventually returns:
-```json
-{
-  "task_id": "<uuid>",
-  "state": "SUCCESS",
-  "result": { "status": "completed", "slept_seconds": 3 }
+
+# Apply edits (persist + re-typeset in background)
+$edits = @{ edits = @(@{ id = 1; en_text = 'Hello!'; font_size = 18 }) } | ConvertTo-Json
+$resp2 = iwr -UseBasicParsing -Method POST -ContentType 'application/json' -Body $edits "http://127.0.0.1:8000/api/v1/jobs/$taskId/edits"
+$editsTask = ($resp2.Content | ConvertFrom-Json).task_id
+
+# Poll edits task if desired
+while ($true) {
+  $r = irm "http://127.0.0.1:8000/api/v1/process/$editsTask"
+  $r
+  if ($r.state -eq 'SUCCESS' -or $r.state -eq 'FAILURE') { break }
+  Start-Sleep -Seconds 1
 }
+
+# Fetch export URLs
+irm "http://127.0.0.1:8000/api/v1/jobs/$taskId/exports"
+
+# Download packaged artifacts (zip)
+irm -OutFile "mangafuse_$taskId.zip" "http://127.0.0.1:8000/api/v1/jobs/$taskId/download"
 ```
 
 ## Phase 1 Exit Criteria (Checklist)
@@ -121,7 +136,9 @@ Expected behavior:
   - `GET /api/v1/` → Hello World
   - `GET /api/v1/healthz` → liveness
   - `GET /api/v1/readyz` → readiness (200 when Redis reachable, 503 otherwise)
-  - `POST /api/v1/process` → enqueues Celery task, returns `{ task_id }`
+- `POST /api/v1/process` → enqueues Celery job from an uploaded image, returns `{ task_id }`
+- `POST /api/v1/jobs/{task_id}/edits` → persists edits and enqueues re-typeset
+- `GET /api/v1/jobs/{task_id}/exports` → returns artifact URLs (final image, text layer)
   - `GET /api/v1/process/{task_id}` → polls task state/result
 - Celery worker processes jobs and returns results.
 - Redis runs locally via Docker.

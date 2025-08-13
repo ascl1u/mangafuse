@@ -13,6 +13,10 @@ class BubbleText:
     bubble_id: int
     polygon: List[List[float]]
     text: str
+    # Optional font size override requested by the user. When provided, we will
+    # attempt to honor it if it fits within the available region; otherwise we
+    # will reduce the size to the largest that fits.
+    font_size: Optional[int] = None
 
 
 def _polygon_bbox(polygon: List[List[float]]) -> Tuple[int, int, int, int]:
@@ -118,6 +122,40 @@ def _compute_font_size_via_binary_search(
     return best_size, best_lines
 
 
+def _wrap_with_preferred_size(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font_path: Path,
+    max_width: int,
+    max_height: int,
+    preferred_size: int,
+    min_size: int = 10,
+    max_size: int = 64,
+) -> Tuple[int, List[str]]:
+    size = int(max(min_size, min(max_size, preferred_size)))
+    font = ImageFont.truetype(str(font_path), size=size)
+    lines = _wrap_text_to_fit(draw, text, font, max_width)
+    total_h = 0
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        h = bbox[3] - bbox[1]
+        total_h += h if i == 0 else int(h * 1.1)
+    if lines:
+        total_h = int(total_h * 1.0)
+    if total_h <= max_height:
+        return size, lines
+    # Too big → fall back to binary search constrained by preferred size
+    return _compute_font_size_via_binary_search(
+        draw=draw,
+        text=text,
+        font_path=font_path,
+        max_width=max_width,
+        max_height=max_height,
+        min_size=min_size,
+        max_size=min(size, max_size),
+    )
+
+
 def _draw_centered_text(
     canvas: Image.Image,
     x0: int,
@@ -128,7 +166,9 @@ def _draw_centered_text(
     text: str,
     polygon: List[List[float]],
     debug: bool = False,
-) -> None:
+    preferred_font_size: Optional[int] = None,
+    text_layer: Optional[Image.Image] = None,
+) -> Tuple[int, List[str]]:
     # Use overlay and mask to clip strictly to polygon
     max_width = max(1, x1 - x0)
     max_height = max(1, y1 - y0)
@@ -137,7 +177,13 @@ def _draw_centered_text(
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
 
-    font_size, lines = _compute_font_size_via_binary_search(draw_overlay, text, font_path, max_width, max_height)
+    # Choose font size: honor preferred when possible
+    if preferred_font_size is not None:
+        font_size, lines = _wrap_with_preferred_size(
+            draw_overlay, text, font_path, max_width, max_height, preferred_size=preferred_font_size
+        )
+    else:
+        font_size, lines = _compute_font_size_via_binary_search(draw_overlay, text, font_path, max_width, max_height)
     font = ImageFont.truetype(str(font_path), size=font_size)
 
     # Measure lines with consistent spacing
@@ -171,8 +217,11 @@ def _draw_centered_text(
     combined_alpha = ImageChops.multiply(alpha, mask)
     overlay.putalpha(combined_alpha)
 
-    # Composite onto canvas
+    # Composite onto canvas and optional text_layer
     canvas.paste(overlay, (0, 0), overlay)
+    if text_layer is not None:
+        text_layer.paste(overlay, (0, 0), overlay)
+    return font_size, lines
 
 
 def render_typeset(
@@ -183,7 +232,8 @@ def render_typeset(
     margin_px: int = 6,
     debug: bool = False,
     debug_overlay_path: Optional[Path] = None,
-) -> None:
+    text_layer_output_path: Optional[Path] = None,
+) -> dict:
     """Render English text onto cleaned page image.
 
     Uses polygon bounding boxes minus a margin as fitting regions. Saves final image.
@@ -195,9 +245,11 @@ def render_typeset(
         raise FileNotFoundError(f"Font not found: {font_path}")
 
     base = Image.open(cleaned_path).convert("RGB")
+    text_layer_img = Image.new("RGBA", base.size, (0, 0, 0, 0)) if text_layer_output_path is not None else None
     debug_img = base.copy() if debug else None
     base_draw = ImageDraw.Draw(debug_img) if debug_img else None
 
+    used_sizes: dict = {}
     for rec in records:
         if not rec.polygon:
             continue
@@ -208,7 +260,20 @@ def render_typeset(
         y1 -= margin_px
         if x1 <= x0 or y1 <= y0:
             continue
-        _draw_centered_text(base, x0, y0, x1, y1, font_path, rec.text, rec.polygon, debug=debug)
+        size_used, _lines = _draw_centered_text(
+            base,
+            x0,
+            y0,
+            x1,
+            y1,
+            font_path,
+            rec.text,
+            rec.polygon,
+            debug=debug,
+            preferred_font_size=rec.font_size,
+            text_layer=text_layer_img,
+        )
+        used_sizes[rec.bubble_id] = int(size_used)
         if debug and base_draw:
             base_draw.rectangle([x0, y0, x1, y1], outline=(0, 255, 0))
             # Outline the polygon
@@ -221,5 +286,8 @@ def render_typeset(
     base.save(output_final_path)
     if debug and debug_overlay_path is not None and debug_img is not None:
         debug_img.save(debug_overlay_path)
+    if text_layer_output_path is not None and text_layer_img is not None:
+        text_layer_img.save(text_layer_output_path)
+    return used_sizes
 
 

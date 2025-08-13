@@ -1,10 +1,12 @@
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, List, Optional
+from pathlib import Path
 
 import uuid
 from pathlib import Path
 
 import redis
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from celery.result import AsyncResult
 
@@ -109,5 +111,94 @@ def get_process_status(task_id: str) -> Dict[str, Any]:
         else:
             payload["result"] = result.result
     return payload
+
+
+class EditRecord(BaseModel):
+    id: int
+    en_text: Optional[str] = None
+    font_size: Optional[int] = None
+
+
+class ApplyEditsRequest(BaseModel):
+    edits: List[EditRecord]
+
+
+@router.post("/jobs/{task_id}/edits", summary="Persist edits and enqueue re-typeset", status_code=status.HTTP_202_ACCEPTED)
+def apply_edits(task_id: str, body: ApplyEditsRequest) -> Dict[str, str]:
+    """Save edits and enqueue a background re-typeset job.
+
+    Returns the id of the background task (reuse the original task id for artifact paths).
+    """
+    async_result = celery_app.send_task(
+        "app.worker.tasks.apply_edits_task",
+        args=[task_id, [e.model_dump() for e in body.edits]],
+        kwargs={},
+    )
+    return {"task_id": async_result.id, "job_id": task_id}
+
+
+@router.get("/jobs/{task_id}/exports", summary="Get export artifact URLs")
+def get_exports(task_id: str) -> Dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[4]
+    job_dir = repo_root / "artifacts" / "jobs" / task_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="job not found")
+    final = job_dir / "final.png"
+    text_layer = job_dir / "text_layer.png"
+    payload: Dict[str, Any] = {"task_id": task_id}
+    if final.exists():
+        payload["final_url"] = f"/artifacts/jobs/{task_id}/final.png"
+    if text_layer.exists():
+        payload["text_layer_url"] = f"/artifacts/jobs/{task_id}/text_layer.png"
+    return payload
+
+
+@router.get("/jobs/{task_id}/download", summary="Download packaged artifacts (zip)")
+def download_package(task_id: str):
+    """Stream a zip containing available artifacts for a job.
+
+    Contents:
+      - cleaned.png (required)
+      - final.png (when present)
+      - text_layer.png (when present)
+      - text.json (when present)
+      - editor_payload.json (when present)
+    """
+    import io
+    import zipfile
+
+    repo_root = Path(__file__).resolve().parents[4]
+    job_dir = repo_root / "artifacts" / "jobs" / task_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="job not found")
+
+    cleaned = job_dir / "cleaned.png"
+    if not cleaned.exists():
+        raise HTTPException(status_code=404, detail="cleaned artifact not ready")
+
+    final = job_dir / "final.png"
+    text_layer = job_dir / "text_layer.png"
+    text_json = job_dir / "text.json"
+    editor_payload = job_dir / "editor_payload.json"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(cleaned, arcname="cleaned.png")
+        if final.exists():
+            zf.write(final, arcname="final.png")
+        if text_layer.exists():
+            zf.write(text_layer, arcname="text_layer.png")
+        if text_json.exists():
+            zf.write(text_json, arcname="text.json")
+        if editor_payload.exists():
+            zf.write(editor_payload, arcname="editor_payload.json")
+    buf.seek(0)
+
+    filename = f"mangafuse_{task_id}.zip"
+    headers = {
+        "Content-Disposition": f"attachment; filename={filename}",
+        "Cache-Control": "no-cache",
+    }
+    return StreamingResponse(buf, media_type="application/zip", headers=headers)
 
 
