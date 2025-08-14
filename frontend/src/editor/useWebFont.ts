@@ -1,12 +1,15 @@
-let loadingPromise: Promise<void> | null = null
+const cache = new Map<string, Promise<void>>()
 
 export function loadWebFontOnce(family: string, url: string): Promise<void> {
-  if (loadingPromise) return loadingPromise
+  const key = `${family}|${url}`
+  const existing = cache.get(key)
+  if (existing) return existing
   if (document.fonts && [...document.fonts].some((f) => f.family === family)) {
-    loadingPromise = Promise.resolve()
-    return loadingPromise
+    const p = Promise.resolve()
+    cache.set(key, p)
+    return p
   }
-  loadingPromise = (async () => {
+  const p = (async () => {
     try {
       const font = new FontFace(family, `url(${url})`)
       await font.load()
@@ -15,7 +18,8 @@ export function loadWebFontOnce(family: string, url: string): Promise<void> {
       // swallow; fallback fonts will be used
     }
   })()
-  return loadingPromise
+  cache.set(key, p)
+  return p
 }
 
 

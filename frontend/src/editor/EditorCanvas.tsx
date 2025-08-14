@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Stage, Layer, Image as KonvaImage, Line, Text as KonvaText, Group } from 'react-konva'
+import type Konva from 'konva'
 import { loadWebFontOnce } from './useWebFont'
+import { FONT_FAMILY, FONT_URL, FONT_SIZE_MIN } from '../constants'
 import type { EditorPayload, EditorBubble } from '../store'
 
 type Props = {
@@ -48,9 +50,11 @@ export function EditorCanvas({ editor, selectedId, onSelect, edits, disabled }: 
   const imageUrl = `${API_BASE}${editor.image_url}`
   const img = useHtmlImage(imageUrl)
   // Load Anime Ace font from assets for client-side overlay
-  const fontUrl = `${API_BASE}/assets/fonts/animeace2_reg.ttf`
+  const fontUrl = `${API_BASE}${FONT_URL}`
+  const [fontReady, setFontReady] = useState<boolean>(false)
   useEffect(() => {
-    loadWebFontOnce('Anime Ace', fontUrl)
+    setFontReady(false)
+    loadWebFontOnce(FONT_FAMILY, fontUrl).finally(() => setFontReady(true))
   }, [fontUrl])
 
   // Fit-to-width sizing: container width is measured via ref
@@ -95,12 +99,12 @@ export function EditorCanvas({ editor, selectedId, onSelect, edits, disabled }: 
             const baseColor = isSelected ? '#2563eb' /* blue-600 */ : 'rgba(0,0,0,0.35)'
             const fill = isSelected ? 'rgba(37,99,235,0.15)' : 'rgba(0,0,0,0.08)'
             const points = polygonToLinePoints(poly)
-            const onEnter = (e: any) => {
-              const node = e.target as any
+            const onEnter = (e: Konva.KonvaEventObject<MouseEvent>) => {
+              const node = e.target
               if (!isSelected) node.opacity(0.9)
             }
-            const onLeave = (e: any) => {
-              const node = e.target as any
+            const onLeave = (e: Konva.KonvaEventObject<MouseEvent>) => {
+              const node = e.target
               if (!isSelected) node.opacity(1)
             }
             // live text
@@ -120,7 +124,7 @@ export function EditorCanvas({ editor, selectedId, onSelect, edits, disabled }: 
                   onMouseEnter={onEnter}
                   onMouseLeave={onLeave}
                 />
-                {text && (
+                {text && fontReady && (
                   <Group
                     clipFunc={(ctx) => {
                       ctx.beginPath()
@@ -139,8 +143,8 @@ export function EditorCanvas({ editor, selectedId, onSelect, edits, disabled }: 
                       y={rect.y0}
                       width={rect.w}
                       height={rect.h}
-                      fontSize={Math.max(6, edit.font_size ?? b.font_size ?? 18)}
-                      fontFamily="Anime Ace, Arial, sans-serif"
+                      fontSize={Math.max(FONT_SIZE_MIN, edit.font_size ?? b.font_size ?? 18)}
+                      fontFamily={`${FONT_FAMILY}, Arial, sans-serif`}
                       align="center"
                       verticalAlign="middle"
                       fill="#000"

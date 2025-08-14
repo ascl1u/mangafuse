@@ -130,7 +130,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
   async loadEditor(taskId, result) {
     if (!result) return
-    const url = result.editor_payload_url || `/artifacts/jobs/${taskId}/editor_payload.json`
+    const base = result.editor_payload_url || `/artifacts/jobs/${taskId}/editor_payload.json`
+    // Cache bust to avoid stale payload after edits
+    const url = `${base}?t=${Date.now()}`
     try {
       const resp = await fetch(`${API_BASE}${url}`)
       if (!resp.ok) return
@@ -173,7 +175,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       if (typeof e.font_size === 'number') payload.font_size = e.font_size
       editsArr.push(payload)
     }
-    if (editsArr.length === 0) return
+    // Always proceed to trigger server-side typesetting even if no local diffs
     set({ applyingEdits: true })
     try {
       // Enqueue apply-edits task
