@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import cv2
+import cv2  # type: ignore
 import numpy as np
 
 
@@ -25,10 +25,6 @@ def tight_crop_from_mask(
     fallback_polygon: List[List[float]],
     padding: int = 6,
 ) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
-    """Return a tight crop for OCR and its bbox (x0, y0, x1, y1).
-
-    Prefers the instance mask; falls back to polygon bbox with padding; finally falls back to full image.
-    """
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     h, w = image_bgr.shape[:2]
 
@@ -52,7 +48,6 @@ def tight_crop_from_mask(
         x0, y0, x1, y1 = _expand(*bbox)
         return image_bgr[y0:y1, x0:x1].copy(), (x0, y0, x1, y1)
 
-    # Last resort: full image
     return image_bgr.copy(), (0, 0, w, h)
 
 

@@ -18,18 +18,20 @@ class GeminiTranslator:
     def translate_batch(self, texts: List[str]) -> List[str]:
         if not texts:
             return []
-        # Keep batching small to be gentle on limits; simple and deterministic
         batch_size = 8
         out: List[str] = []
         for i in range(0, len(texts), batch_size):
             chunk = texts[i : i + batch_size]
             prompt = (
-                "Translate the following Japanese manga dialogue lines into concise, natural English suitable for speech bubbles.\n"
-                "Constraints:\n"
+                "Act as a professional manga translator. Translate Japanese text to English. Follow these rules meticulously:\n"
+                "Rules:\n"
+                "- Keep the translated English length roughly similar to the Japanese length.\n"
+                "- Proper nouns (e.g. names of people and places) and cultural concepts (e.g. sensei, katana, ryokan) should not be translated. Directly output the English romaji.\n"
+                "- Retain `-san`, `-kun`, `-chan`, `-sama`, and other honorifics. Directly attach them to the English romaji.\n"
+                "- Preserve the formality level (`desu/masu` vs. plain/casual). \n"
+                "- Add implied subjects/pronouns where essential for English clarity.\n"
+                "- Adjust verb tense/aspect for natural English flow, even if the Japanese is ambiguous.\n"
                 "- Output exactly one English line per input line, in the same order.\n"
-                "- Keep the English length roughly similar to the Japanese length.\n"
-                "- If a name appears, do not attempt a translation and output the English romaji.\n"
-                "- If an explicit word appears, replace it with the neutral placeholder 'banana'.\n"
                 "- Output only the translations; no numbering, bullets, or extra commentary.\n\n"
                 + "\n".join(f"- {t}" for t in chunk)
             )

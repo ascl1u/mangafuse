@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import cv2
+import cv2  # type: ignore
 import numpy as np
+
 
 class MangaOcrEngine:
     """Thin wrapper around manga-ocr with lazy initialization."""
@@ -20,7 +21,7 @@ class MangaOcrEngine:
             self._engine = MangaOcr()
 
     def run(self, image: np.ndarray) -> str:
-        from PIL import Image
+        from PIL import Image  # type: ignore
 
         self._ensure()
         if image.ndim == 2:

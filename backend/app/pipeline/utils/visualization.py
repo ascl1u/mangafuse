@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-import cv2
+import cv2  # type: ignore
 import numpy as np
 
 
@@ -10,9 +10,8 @@ def generate_distinct_colors(num_colors: int, seed: int = 42) -> List[Tuple[int,
     rng = np.random.default_rng(seed)
     colors = []
     for _ in range(num_colors):
-        # Bright, diverse colors in BGR for OpenCV
         color = tuple(int(c) for c in rng.integers(low=64, high=255, size=3))
-        colors.append((color[2], color[1], color[0]))  # convert RGB->BGR permutation
+        colors.append((color[2], color[1], color[0]))
     return colors
 
 
@@ -31,10 +30,8 @@ def make_overlay(
         colored[:, :] = color
         mask_bool = mask.astype(bool)
         overlay[mask_bool] = cv2.addWeighted(image_bgr[mask_bool], 1 - alpha, colored[mask_bool], alpha, 0)
-        # draw contour for visual clarity
         contours, _ = cv2.findContours((mask * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(overlay, contours, -1, (0, 0, 0), thickness=1)
-        # annotate confidence near polygon centroid if available
         if polygons and idx < len(polygons):
             poly = polygons[idx]
             if len(poly) > 0:
@@ -48,5 +45,6 @@ def make_overlay(
                     cv2.putText(overlay, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                     cv2.putText(overlay, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     return overlay
+
 
 

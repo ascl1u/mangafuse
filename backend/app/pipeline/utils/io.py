@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
+import cv2  # type: ignore
 import numpy as np
 
 
@@ -22,5 +22,6 @@ def save_png(path: Path, image_bgr: np.ndarray) -> None:
     ok = cv2.imwrite(str(path), image_bgr)
     if not ok:
         raise RuntimeError(f"Failed to write image: {path}")
+
 
 

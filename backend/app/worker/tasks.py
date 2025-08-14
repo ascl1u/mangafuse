@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
 from app.worker.celery_app import celery_app
-from app.pipeline.io import ensure_dir
+from app.pipeline.utils.io import ensure_dir
 from app.core.paths import get_job_dir
 from app.pipeline.orchestrator import run_pipeline as orchestrator_run_pipeline, apply_edits as orchestrator_apply_edits
 

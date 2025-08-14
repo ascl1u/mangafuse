@@ -31,7 +31,6 @@ def read_text_json(json_path: Path) -> Dict[str, Any]:
         )
     with open(json_path, "r", encoding="utf-8") as f:
         data: Dict[str, Any] = json.load(f)
-    # Normalize structure
     if "bubbles" not in data or not isinstance(data["bubbles"], list):
         data = {"bubbles": []}
     return data
@@ -41,5 +40,6 @@ def save_text_records(json_path: Path, bubbles: List[Dict[str, Any]]) -> None:
     ensure_dir(json_path.parent)
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump({"bubbles": bubbles}, f, ensure_ascii=False, indent=2)
+
 
 

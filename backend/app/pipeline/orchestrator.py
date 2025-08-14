@@ -28,18 +28,19 @@ def run_pipeline(
     import os
     import json
     import cv2  # type: ignore
-    from app.pipeline.io import ensure_dir, read_image_bgr, save_png
-    from app.pipeline.segmentation import run_segmentation
-    from app.pipeline.masks import save_masks
-    from app.pipeline.visualization import make_overlay
-    from app.pipeline.textio import write_text_json, read_text_json, save_text_records
-    from app.pipeline.crops import tight_crop_from_mask
-    from app.pipeline.preprocess import binarize_for_ocr
-    from app.pipeline.ocr_engine import MangaOcrEngine
-    from app.pipeline.translator import GeminiTranslator
-    from app.pipeline.inpaint import run_inpainting
-    from app.pipeline.typeset import BubbleText, render_typeset
-    from app.pipeline.text_mask import build_text_inpaint_mask
+    from app.pipeline.utils.io import ensure_dir, read_image_bgr, save_png
+    from app.pipeline.segmentation.yolo import run_segmentation
+    from app.pipeline.utils.masks import save_masks
+    from app.pipeline.utils.visualization import make_overlay
+    from app.pipeline.utils.textio import write_text_json, read_text_json, save_text_records
+    from app.pipeline.ocr.crops import tight_crop_from_mask
+    from app.pipeline.ocr.preprocess import binarize_for_ocr
+    from app.pipeline.ocr.engine import MangaOcrEngine
+    from app.pipeline.translate.gemini import GeminiTranslator
+    from app.pipeline.inpaint.lama import run_inpainting
+    from app.pipeline.typeset.model import BubbleText
+    from app.pipeline.typeset.render import render_typeset
+    from app.pipeline.inpaint.text_mask import build_text_inpaint_mask
 
     # Determine job directory from image path location convention:
     # tasks write under artifacts/jobs/{job_id}/; maintain this here by resolving relative
@@ -326,9 +327,10 @@ def apply_edits(
     """
     import json
     import cv2  # type: ignore
-    from app.pipeline.textio import read_text_json, save_text_records
-    from app.pipeline.typeset import BubbleText, render_typeset
-    from app.pipeline.io import save_png
+    from app.pipeline.utils.textio import read_text_json, save_text_records
+    from app.pipeline.typeset.model import BubbleText
+    from app.pipeline.typeset.render import render_typeset
+    from app.pipeline.utils.io import save_png
 
     repo_root = Path(__file__).resolve().parents[3]
     job_dir = repo_root / "artifacts" / "jobs" / job_id

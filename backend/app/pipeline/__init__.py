@@ -1,9 +1,12 @@
 """Pipeline package for AI processing stages.
 
-Modules:
-- `segmentation` — YOLOv8-based speech bubble segmentation and artifact writing
-- `textio` — read/write helpers for `artifacts/text.json`
-- `io`, `masks`, `visualization` — image IO and rendering utilities
+Subpackages:
+- `utils` — shared utilities (`io`, `masks`, `textio`, `visualization`, `geometry`)
+- `segmentation` — YOLOv8-based speech bubble segmentation
+- `ocr` — OCR engine, preprocessing, crops
+- `translate` — translator implementations
+- `inpaint` — inpainting runner and text-mask builder
+- `typeset` — layout, fit, render
 """
 
 
