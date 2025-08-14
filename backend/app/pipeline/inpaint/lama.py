@@ -1,12 +1,12 @@
 from __future__ import annotations
-
-from pathlib import Path
-
 import cv2  # type: ignore
 import numpy as np
 
 
-def run_inpainting(image_path: Path, combined_mask_path: Path) -> np.ndarray:
+def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
+    """
+    Runs the LaMa inpainting model on an in-memory image and mask.
+    """
     try:
         from PIL import Image  # type: ignore
     except Exception as exc:  # noqa: BLE001
@@ -19,26 +19,17 @@ def run_inpainting(image_path: Path, combined_mask_path: Path) -> np.ndarray:
             "simple-lama-inpainting is required. Install AI deps from backend/requirements-ai.txt"
         ) from exc
 
-    if not image_path.exists():
-        raise FileNotFoundError(f"Input image not found: {image_path}")
-    if not combined_mask_path.exists():
-        raise FileNotFoundError(
-            f"Combined mask not found: {combined_mask_path}. Run segmentation stage first."
-        )
+    h, w = image_bgr.shape[:2]
+    if mask_gray.shape != (h, w):
+        raise ValueError(f"Mask shape {mask_gray.shape} must match image shape {(h, w)}")
 
-    pil_image = Image.open(image_path).convert("RGB")
-
-    mask_gray = cv2.imread(str(combined_mask_path), cv2.IMREAD_GRAYSCALE)
-    if mask_gray is None:
-        raise FileNotFoundError(f"Failed to read mask: {combined_mask_path}")
-
-    img_w, img_h = pil_image.size
-    if mask_gray.shape[:2] != (img_h, img_w):
-        mask_gray = cv2.resize(mask_gray, (img_w, img_h), interpolation=cv2.INTER_NEAREST)
+    pil_image = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+    
+    # Binarize the mask to be safe
     _, mask_bin = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
-
     pil_mask = Image.fromarray(mask_bin, mode="L")
 
+    # Optimization: if mask is empty, skip the expensive model call
     if int(np.sum(mask_bin)) == 0:
         pil_result = pil_image
     else:
@@ -47,8 +38,8 @@ def run_inpainting(image_path: Path, combined_mask_path: Path) -> np.ndarray:
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError("PyTorch is required for inpainting stage") from exc
 
+        # Monkey patch to force CPU execution for portability
         original_jit_load = torch.jit.load
-
         def _jit_load_cpu(path, *args, **kwargs):  # type: ignore[no-untyped-def]
             if "map_location" not in kwargs:
                 kwargs["map_location"] = "cpu"
@@ -68,5 +59,3 @@ def run_inpainting(image_path: Path, combined_mask_path: Path) -> np.ndarray:
 
     result_bgr = cv2.cvtColor(np.array(pil_result), cv2.COLOR_RGB2BGR)
     return result_bgr
-
-
