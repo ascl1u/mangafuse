@@ -54,7 +54,7 @@ def process_page_task(
 
 
 @celery_app.task(bind=True, name="app.worker.tasks.apply_edits_task")
-def apply_edits_task(original_task_id: str, edits: list[dict]) -> Dict[str, Any]:
+def apply_edits_task(self, original_task_id: str, edits: list[dict]) -> Dict[str, Any]:
     """Apply user edits to an existing job and re-typeset the final image."""
     result = orchestrator_apply_edits(original_task_id, edits)
     logger.info("task_completed", extra={"task": "apply_edits_task", "result": result})

@@ -105,5 +105,36 @@ def run_segmentation(
     if confidences:
         confidences = confidences[:n]
 
+    # Deduplicate highly overlapping instances via mask-IoU NMS
+    def _mask_iou(a, b):
+        import numpy as _np
+        inter = _np.logical_and(a, b).sum()
+        if inter == 0:
+            return 0.0
+        union = _np.logical_or(a, b).sum()
+        return float(inter) / float(max(1, union))
+
+    if instance_masks:
+        # Order by confidence desc when available; else keep original order
+        order = list(range(len(instance_masks)))
+        if confidences and len(confidences) == len(instance_masks):
+            order.sort(key=lambda i: confidences[i], reverse=True)
+        keep: list[int] = []
+        iou_thresh = 0.80
+        for i in order:
+            mask_i = instance_masks[i]
+            drop = False
+            for j in keep:
+                if _mask_iou(mask_i.astype(bool), instance_masks[j].astype(bool)) >= iou_thresh:
+                    drop = True
+                    break
+            if not drop:
+                keep.append(i)
+        if len(keep) < len(instance_masks):
+            instance_masks = [instance_masks[i] for i in keep]
+            polygons = [polygons[i] for i in keep]
+            if confidences and len(confidences) >= max(keep) + 1:
+                confidences = [confidences[i] for i in keep]
+
     return {"polygons": polygons, "masks": instance_masks, "confidences": confidences}
     

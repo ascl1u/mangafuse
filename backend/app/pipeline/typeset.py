@@ -96,8 +96,8 @@ def _compute_font_size_via_binary_search(
     font_path: Path,
     max_width: int,
     max_height: int,
-    min_size: int = 10,
-    max_size: int = 64,
+    min_size: int = 6,
+    max_size: int = 48,
     line_spacing: float = 1.1,
 ) -> Tuple[int, List[str]]:
     best_size = min_size
@@ -121,6 +121,10 @@ def _compute_font_size_via_binary_search(
             lo = mid + 1
         else:
             hi = mid - 1
+    # If nothing fit even at the minimum, still return wrapped lines at min size
+    if not best_lines:
+        font = ImageFont.truetype(str(font_path), size=min_size)
+        best_lines = _wrap_text_to_fit(draw, text, font, max_width)
     return best_size, best_lines
 
 
@@ -131,7 +135,7 @@ def _wrap_with_preferred_size(
     max_width: int,
     max_height: int,
     preferred_size: int,
-    min_size: int = 10,
+    min_size: int = 6,
     max_size: int = 64,
 ) -> Tuple[int, List[str]]:
     size = int(max(min_size, min(max_size, preferred_size)))
@@ -186,6 +190,12 @@ def _draw_centered_text(
         )
     else:
         font_size, lines = _compute_font_size_via_binary_search(draw_overlay, text, font_path, max_width, max_height)
+    # Ensure we always have something to render even in degenerate cases
+    if not lines:
+        font = ImageFont.truetype(str(font_path), size=max(6, font_size))
+        lines = _wrap_text_to_fit(draw_overlay, text, font, max_width)
+        if not lines:
+            lines = [text]
     font = ImageFont.truetype(str(font_path), size=font_size)
 
     # Measure lines with consistent spacing
@@ -232,6 +242,7 @@ def render_typeset(
     records: List[BubbleText],
     font_path: Path,
     margin_px: int = 6,
+    padding_fraction: float = 0.10,
     debug: bool = False,
     debug_overlay_path: Optional[Path] = None,
     text_layer_output_path: Optional[Path] = None,
@@ -280,9 +291,9 @@ def render_typeset(
             text_layer=None,
         )
 
-        # Pass B: margin = 1.2em based on seed size; compute inner rectangle via geometry helper
-        dynamic_margin = max(1, int(round(seed_size * 1.2)))
-        inner = compute_inner_rect_axis_aligned(rec.polygon, (base.size[0], base.size[1]), dynamic_margin)
+        # Pass B: compute inner rectangle via geometry helper with small geometry-only erosion
+        erode_px = 2
+        inner = compute_inner_rect_axis_aligned(rec.polygon, (base.size[0], base.size[1]), erode_px)
 
         # Fallback to seeded bbox if inner is unavailable
         if inner is None:
@@ -290,15 +301,29 @@ def render_typeset(
         else:
             x0, y0, x1, y1 = inner
 
-        if x1 <= x0 or y1 <= y0:
+        # Apply 10% padding on each side after inner rectangle computation
+        w = max(0, x1 - x0)
+        h = max(0, y1 - y0)
+        pad_x = int(round(w * padding_fraction))
+        pad_y = int(round(h * padding_fraction))
+        # Ensure at least 5px remains after padding on each axis; reduce padding if needed
+        max_pad_x = max(0, (w - 5) // 2)
+        max_pad_y = max(0, (h - 5) // 2)
+        pad_x = min(pad_x, max_pad_x)
+        pad_y = min(pad_y, max_pad_y)
+        x0p, y0p = x0 + pad_x, y0 + pad_y
+        x1p, y1p = x1 - pad_x, y1 - pad_y
+        if x1p <= x0p or y1p <= y0p:
+            x0p, y0p, x1p, y1p = x0, y0, x1, y1
+        if x1p <= x0p or y1p <= y0p:
             continue
 
         size_used, _lines = _draw_centered_text(
             base,
-            x0,
-            y0,
-            x1,
-            y1,
+            x0p,
+            y0p,
+            x1p,
+            y1p,
             font_path,
             rec.text,
             rec.polygon,
@@ -307,9 +332,9 @@ def render_typeset(
             text_layer=text_layer_img,
         )
         used_sizes[rec.bubble_id] = int(size_used)
-        used_rects[rec.bubble_id] = {"x": int(x0), "y": int(y0), "w": int(max(1, x1 - x0)), "h": int(max(1, y1 - y0))}
+        used_rects[rec.bubble_id] = {"x": int(x0p), "y": int(y0p), "w": int(max(1, x1p - x0p)), "h": int(max(1, y1p - y0p))}
         if debug and base_draw:
-            base_draw.rectangle([x0, y0, x1, y1], outline=(0, 255, 0))
+            base_draw.rectangle([x0p, y0p, x1p, y1p], outline=(0, 255, 0))
             pts = [(int(p[0]), int(p[1])) for p in rec.polygon]
             for i in range(len(pts)):
                 a = pts[i]

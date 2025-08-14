@@ -72,13 +72,11 @@ def run_inpainting(image_path: Path, combined_mask_path: Path) -> np.ndarray:
         try:
             model = SimpleLama()
             pil_result = model(pil_image, pil_mask)
-        except Exception:
-            # Fallback to OpenCV Telea inpainting for robustness
-            torch.jit.load = original_jit_load  # restore before fallback
-            src_bgr = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-            # OpenCV expects mask as 0/255 uint8 single channel
-            inpainted = cv2.inpaint(src_bgr, mask_bin, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
-            return inpainted
+        except Exception as exc:  # noqa: BLE001
+            # Fail fast: do not degrade quality with Telea fallback
+            raise RuntimeError(
+                "SimpleLama inpainting failed; fix environment or inputs instead of falling back."
+            ) from exc
         finally:
             # Always restore original function
             if "torch" in locals():
