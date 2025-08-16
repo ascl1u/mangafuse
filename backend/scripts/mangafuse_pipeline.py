@@ -50,6 +50,7 @@ class PipelineConfig:
     use_placeholder_text: bool
 
     # Derived Paths
+    file_prefix: str = field(init=False)
     masks_dir: Path = field(init=False)
     json_path: Path = field(init=False)
     overlay_path: Path = field(init=False)
@@ -60,13 +61,14 @@ class PipelineConfig:
 
     def __post_init__(self):
         """Initialize derived paths after the main fields are set."""
+        self.file_prefix = self.image_path.stem
         self.masks_dir = self.out_dir / "masks"
-        self.json_path = self.out_dir / "text.json"
-        self.overlay_path = self.out_dir / "segmentation_overlay.png"
-        self.combined_mask_path = self.masks_dir / "all_mask.png"
-        self.text_mask_path = self.masks_dir / "text_mask.png"
-        self.cleaned_path = self.out_dir / "cleaned.png"
-        self.final_path = self.out_dir / "final.png"
+        self.json_path = self.out_dir / f"{self.file_prefix}_text.json"
+        self.overlay_path = self.out_dir / f"{self.file_prefix}_segmentation_overlay.png"
+        self.combined_mask_path = self.masks_dir / f"{self.file_prefix}_all_mask.png"
+        self.text_mask_path = self.masks_dir / f"{self.file_prefix}_text_mask.png"
+        self.cleaned_path = self.out_dir / f"{self.file_prefix}_cleaned.png"
+        self.final_path = self.out_dir / f"{self.file_prefix}_final.png"
 
 def parse_args() -> argparse.Namespace:
     """Parses command-line arguments."""
@@ -74,7 +76,7 @@ def parse_args() -> argparse.Namespace:
         description="MangaFuse AI Pipeline (Phase 2)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--image", type=str, required=True, help="Path to input page image")
+    parser.add_argument("--input", type=str, required=True, help="Path to input image or a folder of images")
     parser.add_argument("--out-dir", type=str, required=True, help="Directory to write artifacts")
     parser.add_argument(
         "--stage",
@@ -252,7 +254,7 @@ def run_typeset_stage(config: PipelineConfig, cleaned_bgr: np.ndarray, bubble_da
             )
 
     print(f"Typesetting text for {len(records)} bubbles...")
-    debug_overlay_path = config.out_dir / "typeset_debug.png" if config.debug else None
+    debug_overlay_path = config.out_dir / f"{config.file_prefix}_typeset_debug.png" if config.debug else None
     
     # --- REFACTOR: Pass the in-memory NumPy array directly ---
     render_typeset(
@@ -268,34 +270,11 @@ def run_typeset_stage(config: PipelineConfig, cleaned_bgr: np.ndarray, bubble_da
     if config.debug and debug_overlay_path:
         print(f"Saved debug typesetting overlay to {debug_overlay_path}")
 
-# --- Main Orchestrator ---
 
-def main():
-    """Main function to parse arguments and run the selected pipeline stage(s)."""
-    start_time = time.time()
-    args = parse_args()
+# --- Image Processing Function ---
 
-    backend_env = _BACKEND_DIR / ".env"
-    if backend_env.exists():
-        load_dotenv(backend_env, override=False)
-    load_dotenv(override=False)
-
-    if not Path(args.image).exists():
-        raise FileNotFoundError(f"Input image not found: {args.image}")
-
-    config = PipelineConfig(
-        image_path=Path(args.image),
-        out_dir=Path(args.out_dir),
-        seg_model_path=Path(args.seg_model),
-        font_path=Path(args.font),
-        stage=args.stage,
-        debug=args.debug,
-        force=args.force,
-        use_placeholder_text=args.use_placeholder_text
-    )
-    ensure_dir(config.out_dir)
-    ensure_dir(config.masks_dir)
-    
+def process_image(config: PipelineConfig):
+    """Runs the full pipeline for a single image."""
     print(f"Starting MangaFuse AI Pipeline for '{config.image_path.name}'...")
     print(f"Output directory: '{config.out_dir}'")
     print(f"Stage(s) to run: '{config.stage}'")
@@ -350,8 +329,67 @@ def main():
 
         run_typeset_stage(config, cleaned_bgr, bubble_data)
 
-    end_time = time.time()
-    print(f"\nPipeline finished in {end_time - start_time:.2f} seconds.")
+# --- Main Orchestrator ---
+
+def main():
+    """Main function to parse arguments and run the selected pipeline stage(s)."""
+    overall_start_time = time.time()
+    args = parse_args()
+
+    backend_env = _BACKEND_DIR / ".env"
+    if backend_env.exists():
+        load_dotenv(backend_env, override=False)
+    load_dotenv(override=False)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input path not found: {input_path}")
+    
+    # --- Collect all image paths to process ---
+    image_paths = []
+    if input_path.is_file():
+        image_paths.append(input_path)
+    elif input_path.is_dir():
+        supported_extensions = [".png", ".jpg", ".jpeg", ".webp"]
+        image_paths = sorted([p for p in input_path.glob("*") if p.suffix.lower() in supported_extensions])
+    else:
+        raise ValueError(f"Input path is not a valid file or directory: {input_path}")
+    
+    if not image_paths:
+        print(f"No supported images found in '{input_path}'.")
+        return
+
+    total_images = len(image_paths)
+    print(f"Found {total_images} image(s) to process.")
+
+    # --- Process each image in a loop ---
+    for i, image_path in enumerate(image_paths):
+        image_start_time = time.time()
+        print(f"\n{'='*80}")
+        print(f"PROCESSING IMAGE {i+1}/{total_images}: {image_path.name}")
+        print(f"{'='*80}")
+
+        config = PipelineConfig(
+            image_path=image_path,
+            out_dir=Path(args.out_dir),
+            seg_model_path=Path(args.seg_model),
+            font_path=Path(args.font),
+            stage=args.stage,
+            debug=args.debug,
+            force=args.force,
+            use_placeholder_text=args.use_placeholder_text
+        )
+        ensure_dir(config.out_dir)
+        ensure_dir(config.masks_dir)
+        
+        process_image(config)
+
+        image_end_time = time.time()
+        print(f"\nFinished processing {image_path.name} in {image_end_time - image_start_time:.2f} seconds.")
+
+    overall_end_time = time.time()
+    print(f"\n{'='*80}")
+    print(f"Pipeline finished processing all {total_images} image(s) in {overall_end_time - overall_start_time:.2f} seconds.")
 
 if __name__ == "__main__":
     main()

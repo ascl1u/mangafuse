@@ -91,9 +91,9 @@ def compute_optimal_layout(
     font: ImageFont.FreeTypeFont,
     *,
     line_spacing: float = 1.0,
-    penalty_ragged: float = 100.0,
-    penalty_hyphen_break: float = 500.0,
-    penalty_widow: float = 2000.0,
+    penalty_ragged: float = 50.0,
+    penalty_hyphen_break: float = 50.0,
+    penalty_widow: float = 100.0,
 ) -> Optional[LayoutResult]:
     if not text or not text.strip():
         return LayoutResult(lines=[], baselines_y=[], centers_x=[], x_limits_per_line=[], y_limit=(0.0, 0.0), demerit=0.0)

@@ -117,8 +117,8 @@ def _parse_yolo_results(result: Any) -> Dict[str, List]:
 def run_segmentation(
     image_bgr: np.ndarray,
     seg_model_path: Path,
-    conf_thresh: float = 0.15,
-    nms_iou_thresh: float = 0.80,
+    conf_thresh: float = 0.2,
+    nms_iou_thresh: float = 0.40,
 ) -> Dict[str, List]:
     """
     Performs speech bubble segmentation on a manga page.
