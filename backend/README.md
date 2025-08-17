@@ -1,10 +1,11 @@
-# MangaFuse Backend — Phase 1 (Backend & Worker) Verification
+# MangaFuse Backend — Phase 1 (Backend, DB & Worker) Verification
 
 This guide documents how to set up, run, and verify the Phase 1 backend implementation on Windows (PowerShell). It covers the API service, Redis, Celery worker, and an end-to-end task flow.
 
 ## Prerequisites
 - Python 3.11+
 - Docker Desktop (for Redis)
+- PostgreSQL (DB URL available, or run via Docker)
 - PowerShell
 
 ## 1) Clone and create a virtual environment
@@ -31,6 +32,12 @@ CELERY_TASK_TIME_LIMIT=120
 
 # Phase 2 (local AI script) — set this for translation stage
 # GOOGLE_API_KEY=
+
+# Database URL (PostgreSQL)
+# Either of the following env names are accepted:
+# - DATABASE_URL=postgresql+psycopg://USER:PASS@HOST:5432/DBNAME
+# If you omit "+psycopg" (e.g., postgresql://...), it will be coerced at runtime.
+DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/mangafuse
 ```
 Notes:
 - The app will automatically load `backend/.env` (see `app/core/config.py`).
@@ -45,7 +52,20 @@ Verify Redis is running:
 docker ps | Select-String mangafuse-redis
 ```
 
-## 4) Start the FastAPI server
+## 4) (Optional) Start PostgreSQL via Docker
+If you don't have a PostgreSQL instance already, you can run one locally:
+```powershell
+docker run --name mangafuse-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_USER=postgres -e POSTGRES_DB=mangafuse -p 5432:5432 -d postgres:16-alpine
+```
+
+## 5) Apply database migrations
+From the `backend/` directory:
+```powershell
+alembic -c alembic.ini upgrade head
+```
+This creates the `users`, `projects`, and `project_artifacts` tables.
+
+## 6) Start the FastAPI server
 In a new PowerShell window (keep the venv active):
 ```powershell
 cd backend
@@ -54,7 +74,7 @@ uvicorn app.main:app --reload
 ```
 The server should be available at `http://127.0.0.1:8000` and docs at `http://127.0.0.1:8000/docs`.
 
-## 5) Start the Celery worker
+## 7) Start the Celery worker
 In another PowerShell window (keep the venv active):
 ```powershell
 cd backend
@@ -65,7 +85,7 @@ Notes:
 - `--pool=solo` ensures compatibility on Windows.
 - Logs are JSON-formatted for readability and future ingest.
 
-## 6) Verify endpoints (liveness/readiness/hello)
+## 8) Verify endpoints (liveness/readiness/hello/database)
 Use either the browser or PowerShell. Examples below use PowerShell.
 
 - Hello World
@@ -87,7 +107,14 @@ irm http://127.0.0.1:8000/api/v1/readyz
 # If Redis is down or misconfigured: HTTP 503
 ```
 
-## 7) End-to-end job flow (upload → process → edits → exports)
+- Database Readiness (requires DATABASE_URL and a reachable DB)
+```powershell
+irm http://127.0.0.1:8000/api/v1/dbz
+# Expected: { "status": "ready" } when the DB is reachable
+# If DB is down or misconfigured: HTTP 503
+```
+
+## 9) End-to-end job flow (upload → process → edits → exports)
 
 Start a processing job by uploading an image using `multipart/form-data` and optional form fields.
 
@@ -136,12 +163,14 @@ irm -OutFile "mangafuse_$taskId.zip" "http://127.0.0.1:8000/api/v1/jobs/$taskId/
   - `GET /api/v1/` → Hello World
   - `GET /api/v1/healthz` → liveness
   - `GET /api/v1/readyz` → readiness (200 when Redis reachable, 503 otherwise)
+  - `GET /api/v1/dbz` → database readiness (200 when DB reachable, 503 otherwise)
 - `POST /api/v1/process` → enqueues Celery job from an uploaded image, returns `{ task_id }`
 - `POST /api/v1/jobs/{task_id}/edits` → persists edits and enqueues re-typeset
 - `GET /api/v1/jobs/{task_id}/exports` → returns artifact URLs (final image, text layer)
   - `GET /api/v1/process/{task_id}` → polls task state/result
 - Celery worker processes jobs and returns results.
 - Redis runs locally via Docker.
+- Database is provisioned and reachable; Alembic migrations have been applied.
 - Configuration via `.env` is documented (this file).
 
 If all the above pass, Phase 1 is complete and you can proceed to Phase 2 in `../roadmap.md`.

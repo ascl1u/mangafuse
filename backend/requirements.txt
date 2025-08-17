@@ -5,4 +5,7 @@ redis
 python-dotenv
 celery
 python-multipart
+sqlmodel
+alembic
+psycopg[binary]
 

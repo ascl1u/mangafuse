@@ -12,12 +12,10 @@ from app.core.config import get_settings
 from app.worker.celery_app import celery_app
 from app.api.v1.schemas import ApplyEditsRequest
 from app.core.paths import get_uploads_dir, get_job_dir
+from app.db.session import check_database_connection
 
 
 router = APIRouter(prefix="/api/v1")
-
-
-
 
 
 @router.get("/healthz", summary="Liveness probe")
@@ -39,6 +37,13 @@ def readyz() -> Dict[str, str]:
         raise RuntimeError("unexpected redis ping result")
     except Exception as exc:  # noqa: BLE001 - surface readiness failure as 503
         raise HTTPException(status_code=503, detail=f"redis not reachable: {exc}")
+
+
+@router.get("/dbz", summary="Database readiness probe")
+def dbz() -> Dict[str, str]:
+    if not check_database_connection():
+        raise HTTPException(status_code=503, detail="database not reachable")
+    return {"status": "ready"}
 
 
 @router.post("/process", summary="Upload an image and start processing", status_code=status.HTTP_202_ACCEPTED)

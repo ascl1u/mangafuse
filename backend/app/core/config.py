@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, AliasChoices
 from dotenv import load_dotenv
 
 
@@ -21,6 +22,13 @@ class Settings(BaseSettings):
     celery_result_backend: Optional[str] = None
     celery_task_time_limit: int = 120
     google_api_key: Optional[str] = None
+
+    # Database configuration
+    database_url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL"),
+        description="SQLAlchemy URL to the primary database (e.g., postgresql+psycopg://user:pass@host:5432/db)",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
