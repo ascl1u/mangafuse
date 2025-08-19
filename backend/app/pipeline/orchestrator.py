@@ -28,6 +28,7 @@ def run_pipeline(
     import os
     import json
     import cv2  # type: ignore
+    import numpy as np  # type: ignore
     from app.pipeline.utils.io import ensure_dir, read_image_bgr, save_png
     from app.pipeline.segmentation.yolo import run_segmentation
     from app.pipeline.utils.masks import save_masks
@@ -133,7 +134,8 @@ def run_pipeline(
             bubble_id = int(rec.get("id"))
             polygon = rec.get("polygon") or []
             mask_path = masks_dir / f"{bubble_id}.png"
-            crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_path, polygon)
+            mask_gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_gray, polygon)
             try:
                 bin_img = binarize_for_ocr(crop_bgr)
                 ja_text = ocr_engine.run(bin_img)
@@ -159,7 +161,8 @@ def run_pipeline(
                     bubble_id = int(rec.get("id"))
                     polygon = rec.get("polygon") or []
                     mask_path = masks_dir / f"{bubble_id}.png"
-                    crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_path, polygon)
+                    mask_gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_gray, polygon)
                     try:
                         rec["ja_text"] = ocr_engine.run(binarize_for_ocr(crop_bgr))
                     except Exception:
@@ -188,14 +191,57 @@ def run_pipeline(
         if force or not text_mask_path.exists():
             data = read_text_json(json_path)
             bubbles_for_mask = data.get("bubbles", [])
-            text_mask = build_text_inpaint_mask(image_bgr, masks_dir, bubbles_for_mask)
+            # Use in-memory masks if available from the segmentation stage; otherwise, load from disk
+            if 'instance_masks' in locals() and isinstance(instance_masks, list) and instance_masks:
+                # Ensure masks are single-channel uint8 (0/255)
+                imasks = [
+                    (m.astype(np.uint8) if m.dtype != np.uint8 else m)
+                    for m in instance_masks
+                ]
+            else:
+                imasks = []
+                for rec in bubbles_for_mask:
+                    try:
+                        bubble_id = int(rec.get("id"))
+                    except Exception:
+                        bubble_id = None
+                    if bubble_id is None:
+                        # maintain index alignment with a blank mask
+                        imasks.append(np.zeros((height, width), dtype=np.uint8))
+                        continue
+                    mpath = masks_dir / f"{bubble_id}.png"
+                    m = cv2.imread(str(mpath), cv2.IMREAD_GRAYSCALE)
+                    if m is None:
+                        m = np.zeros((height, width), dtype=np.uint8)
+                    elif m.ndim == 3 and m.shape[2] == 3:
+                        m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
+                    elif m.ndim == 3 and m.shape[2] == 4:
+                        m = cv2.cvtColor(m, cv2.COLOR_BGRA2GRAY)
+                    imasks.append(m)
+            text_mask = build_text_inpaint_mask(image_bgr, imasks, bubbles_for_mask)
             save_png(text_mask_path, cv2.cvtColor(text_mask, cv2.COLOR_GRAY2BGR))
         # Choose mask: text_mask if non-empty else combined
-        use_mask_path = combined_mask_path
-        text_mask_gray = cv2.imread(str(text_mask_path), cv2.IMREAD_GRAYSCALE)
+        # Prepare grayscale mask for inpainting (ensure strictly 2D HxW)
+        def _to_gray_2d(img):  # type: ignore[no-redef]
+            if img is None:
+                return None
+            if getattr(img, "ndim", 2) == 2:
+                return img
+            if img.ndim == 3:
+                if img.shape[2] == 1:
+                    return img[:, :, 0]
+                return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            return None
+
+        text_mask_img = cv2.imread(str(text_mask_path), cv2.IMREAD_UNCHANGED)
+        text_mask_gray = _to_gray_2d(text_mask_img)
         if text_mask_gray is not None and int(text_mask_gray.sum()) > 0:
-            use_mask_path = text_mask_path
-        result_bgr = run_inpainting(input_image_path, use_mask_path)
+            mask_for_inpaint = text_mask_gray
+        else:
+            combined_img = cv2.imread(str(combined_mask_path), cv2.IMREAD_UNCHANGED)
+            combined_gray = _to_gray_2d(combined_img)
+            mask_for_inpaint = combined_gray if combined_gray is not None else np.zeros((height, width), dtype=np.uint8)
+        result_bgr = run_inpainting(image_bgr, mask_for_inpaint)
         save_png(cleaned_path, result_bgr)
         stage_completed.append("inpaint")
         _update("inpaint_complete", 0.85)
@@ -218,8 +264,9 @@ def run_pipeline(
                     font_size=(int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None),
                 )
             )
+        cleaned_image = read_image_bgr(cleaned_path)
         used_sizes, used_rects = render_typeset(
-            cleaned_path=cleaned_path,
+            cleaned_image_bgr=cleaned_image,
             output_final_path=final_path,
             records=records,
             font_path=font,
@@ -250,6 +297,12 @@ def run_pipeline(
 
     # Build result payload
     num_bubbles = len(bubbles)
+    # Provide a minimal editor payload by default; will be overwritten below if we can build a richer one
+    default_image_url = (
+        f"/artifacts/jobs/{job_id}/cleaned.png" if cleaned_path.exists() else (
+            f"/artifacts/jobs/{job_id}/final.png" if final_path.exists() else f"/artifacts/jobs/{job_id}/segmentation_overlay.png"
+        )
+    )
     result: Dict[str, Any] = {
         "stage_completed": stage_completed,
         "width": int(width),
@@ -257,6 +310,12 @@ def run_pipeline(
         "num_bubbles": int(num_bubbles),
         "json_url": f"/artifacts/jobs/{job_id}/text.json",
         "overlay_url": f"/artifacts/jobs/{job_id}/segmentation_overlay.png",
+        "editor_payload": {
+            "image_url": default_image_url,
+            "width": int(width),
+            "height": int(height),
+            "bubbles": [],
+        },
     }
     if cleaned_path.exists():
         result["cleaned_url"] = f"/artifacts/jobs/{job_id}/cleaned.png"
@@ -264,6 +323,18 @@ def run_pipeline(
         result["final_url"] = f"/artifacts/jobs/{job_id}/final.png"
     if debug and typeset_debug_path.exists():
         result["typeset_debug_url"] = f"/artifacts/jobs/{job_id}/typeset_debug.png"
+
+    # Provide artifact paths for worker upload
+    artifacts: Dict[str, str] = {}
+    if cleaned_path.exists():
+        artifacts["CLEANED_PAGE"] = str(cleaned_path)
+    if final_path.exists():
+        artifacts["FINAL_PNG"] = str(final_path)
+    text_layer_path = job_dir / "text_layer.png"
+    if text_layer_path.exists():
+        artifacts["TEXT_LAYER_PNG"] = str(text_layer_path)
+    if artifacts:
+        result["artifacts"] = artifacts
 
     # Write editor_payload.json for frontend editor
     try:
@@ -276,7 +347,8 @@ def run_pipeline(
             bubble_id = int(rec.get("id"))
             polygon = rec.get("polygon") or []
             try:
-                crop_bgr, _bbox = tight_crop_from_mask(image_bgr, masks_dir / f"{bubble_id}.png", polygon)
+                mask_gray = cv2.imread(str(masks_dir / f"{bubble_id}.png"), cv2.IMREAD_GRAYSCALE)
+                crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_gray, polygon)
                 save_png(crops_dir / f"{bubble_id}.png", crop_bgr)
                 crop_url = f"/artifacts/jobs/{job_dir.name}/crops/{bubble_id}.png"
             except Exception:
@@ -310,6 +382,7 @@ def run_pipeline(
         with open(editor_payload_path, "w", encoding="utf-8") as f:
             json.dump(editor_payload, f, ensure_ascii=False, indent=2)
         result["editor_payload_url"] = f"/artifacts/jobs/{job_id}/editor_payload.json"
+        result["editor_payload"] = editor_payload
     except Exception:
         pass
 
@@ -391,8 +464,12 @@ def apply_edits(
             )
         )
 
+    # Read cleaned image and typeset into memory
+    img_cleaned = cv2.imread(str(cleaned_path), cv2.IMREAD_COLOR)
+    if img_cleaned is None:
+        raise FileNotFoundError(f"cleaned image missing for job {job_id}")
     used_sizes, used_rects = render_typeset(
-        cleaned_path=cleaned_path,
+        cleaned_image_bgr=img_cleaned,
         output_final_path=final_path,
         records=records,
         font_path=font,
@@ -473,6 +550,16 @@ def apply_edits(
         "json_url": f"/artifacts/jobs/{job_id}/text.json" if json_path.exists() else None,
         "cleaned_url": f"/artifacts/jobs/{job_id}/cleaned.png" if cleaned_path.exists() else None,
     }
+    # Expose local artifact file paths for the worker to persist via storage
+    artifacts: Dict[str, str] = {}
+    if final_path.exists():
+        artifacts["FINAL_PNG"] = str(final_path)
+    if text_layer_path.exists():
+        artifacts["TEXT_LAYER_PNG"] = str(text_layer_path)
+    if cleaned_path.exists():
+        artifacts["CLEANED_PAGE"] = str(cleaned_path)
+    if artifacts:
+        result["artifacts"] = artifacts
     return result
 
 

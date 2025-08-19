@@ -5,7 +5,6 @@ from .models import (
     ProjectStatus,
     ArtifactType,
 )
-from .session import get_engine, get_sessionmaker
 
 __all__ = [
     "User",
@@ -13,8 +12,6 @@ __all__ = [
     "ProjectArtifact",
     "ProjectStatus",
     "ArtifactType",
-    "get_engine",
-    "get_sessionmaker",
 ]
 
 

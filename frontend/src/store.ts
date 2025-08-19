@@ -2,47 +2,58 @@ import { create } from 'zustand'
 
 export type Depth = 'cleaned' | 'full'
 
-type TaskState = 'PENDING' | 'STARTED' | 'RETRY' | 'PROGRESS' | 'SUCCESS' | 'FAILURE'
+type ProjectStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
 
 export type PollPayload = {
-  task_id: string
-  state: TaskState
+  project_id: string
+  status: ProjectStatus
+  task_state?: string
   meta?: { stage?: string; progress?: number }
   error?: string
-  result?: {
-    task_id: string
-    stage_completed: string[]
-    width: number
-    height: number
-    num_bubbles: number
-    json_url: string
-    overlay_url: string
-    cleaned_url?: string
-    final_url?: string
-    typeset_debug_url?: string
-    editor_payload_url?: string
+  artifacts?: {
+    [key: string]: string
   }
+  editor_data?: EditorPayload
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
-async function uploadAndStart(file: File, depth: Depth, debug = false, force = false): Promise<string> {
+async function uploadAndStart(file: File, getToken: () => Promise<string | null>): Promise<{ projectId: string; taskId: string }> {
+  const token = await getToken()
+  if (!token) throw new Error('Not authenticated')
+  const headers = { Authorization: `Bearer ${token}` }
+
+  // 1. Get upload URL
+  const uploadUrlResp = await fetch(`${API_BASE}/api/v1/projects/upload-url?filename=${encodeURIComponent(file.name)}`, {
+    method: 'POST',
+    headers,
+  })
+  if (!uploadUrlResp.ok) throw new Error('Failed to get upload URL')
+  const { project_id: projectId, url: uploadUrl } = await uploadUrlResp.json()
+
+  // 2. Upload file (multipart/form-data with field name 'file')
   const form = new FormData()
   form.append('file', file)
-  form.append('depth', depth)
-  form.append('debug', String(debug))
-  form.append('force', String(force))
-  const resp = await fetch(`${API_BASE}/api/v1/process`, { method: 'POST', body: form })
-  if (!resp.ok) {
-    const text = await resp.text()
-    throw new Error(`Upload failed (${resp.status}): ${text}`)
-  }
-  const data = (await resp.json()) as { task_id: string }
-  return data.task_id
+  const uploadResp = await fetch(`${API_BASE}${uploadUrl}`, { method: 'POST', body: form, headers })
+  if (!uploadResp.ok) throw new Error('Upload failed')
+  const { storage_key: storageKey } = await uploadResp.json()
+
+  // 3. Create project and start processing
+  const createProjectResp = await fetch(`${API_BASE}/api/v1/projects?project_id=${projectId}&filename=${encodeURIComponent(file.name)}&storage_key=${storageKey}`, {
+    method: 'POST',
+    headers,
+  })
+  if (!createProjectResp.ok) throw new Error('Failed to create project')
+  const { task_id: taskId } = await createProjectResp.json()
+
+  return { projectId, taskId }
 }
 
-async function pollOnce(taskId: string): Promise<PollPayload> {
-  const resp = await fetch(`${API_BASE}/api/v1/process/${taskId}`)
+async function pollOnce(projectId: string, getToken: () => Promise<string | null>): Promise<PollPayload> {
+  const token = await getToken()
+  if (!token) throw new Error('Not authenticated')
+  const headers = { Authorization: `Bearer ${token}` }
+  const resp = await fetch(`${API_BASE}/api/v1/projects/${projectId}`, { headers })
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`Poll failed (${resp.status}): ${text}`)
@@ -78,13 +89,14 @@ type StoreState = {
   depth: Depth
   setDepth: (d: Depth) => void
 
+  projectId: string
   taskId: string
-  state: TaskState
+  state: ProjectStatus
   meta?: { stage?: string; progress?: number }
-  result?: PollPayload['result']
+  result?: PollPayload
   error?: string
 
-  start: (file: File) => Promise<void>
+  start: (file: File, getToken: () => Promise<string | null>) => Promise<void>
   reset: () => void
 
   // Editor state
@@ -93,19 +105,21 @@ type StoreState = {
   setSelectedBubbleId: (id?: number) => void
   edits: EditsMap
   updateEdit: (id: number, patch: { en_text?: string; font_size?: number }) => void
-  loadEditor: (taskId: string, result: PollPayload['result']) => Promise<void>
+  loadEditor: (projectId: string, result: PollPayload) => Promise<void>
 
   // Apply edits & exports
   applyingEdits: boolean
   exports?: ExportPayload
-  applyEdits: () => Promise<void>
+  applyEdits: (getToken: () => Promise<string | null>) => Promise<void>
   downloadUrl: () => string | undefined
+  downloadFile: (getToken: () => Promise<string | null>) => Promise<void>
 }
 
 export const useAppStore = create<StoreState>((set, get) => ({
   depth: 'cleaned',
   setDepth: (d) => set({ depth: d }),
 
+  projectId: '',
   taskId: '',
   state: 'PENDING',
   meta: undefined,
@@ -119,88 +133,88 @@ export const useAppStore = create<StoreState>((set, get) => ({
   updateEdit: (id, patch) => {
     const next = { ...get().edits, [id]: { ...get().edits[id], ...patch } }
     set({ edits: next })
-    const taskId = get().taskId
-    if (taskId) {
+    const projectId = get().projectId
+    if (projectId) {
       try {
-        localStorage.setItem(`mf_edits_${taskId}`, JSON.stringify(next))
+        localStorage.setItem(`mf_edits_${projectId}`, JSON.stringify(next))
       } catch {
         // ignore storage failures in MVP
       }
     }
   },
-  async loadEditor(taskId, result) {
-    if (!result) return
-    const base = result.editor_payload_url || `/artifacts/jobs/${taskId}/editor_payload.json`
-    // Cache bust to avoid stale payload after edits
-    const url = `${base}?t=${Date.now()}`
-    try {
-      const resp = await fetch(`${API_BASE}${url}`)
-      if (!resp.ok) return
-      const payload = (await resp.json()) as EditorPayload
-      // restore edits
+  async loadEditor(projectId, result) {
+    // Prefer payload embedded in the API response
+    if (result.editor_data) {
       let saved: EditsMap = {}
       try {
-        const raw = localStorage.getItem(`mf_edits_${taskId}`)
+        const raw = localStorage.getItem(`mf_edits_${projectId}`)
         if (raw) saved = JSON.parse(raw)
-      } catch {
-        // ignore parse/storage failures
-      }
-      // apply edits onto payload bubbles
-      const bubbles = payload.bubbles.map((b) => {
+      } catch {}
+      const bubbles = result.editor_data.bubbles.map((b) => {
         const e = saved[b.id]
         return e ? { ...b, en_text: e.en_text ?? b.en_text, font_size: e.font_size ?? b.font_size } : b
       })
-      set({ editor: { ...payload, bubbles }, edits: saved })
-    } catch {
-      // ignore for MVP if missing
+      set({ editor: { ...result.editor_data, bubbles }, edits: saved })
+      return
+    }
+    // Fallback: load from a public URL when provided (not typical in Phase 2)
+    const editorPayloadUrl = result.artifacts?.["EDITOR_PAYLOAD"]
+    if (editorPayloadUrl) {
+      const url = `${API_BASE}${editorPayloadUrl}?t=${Date.now()}`
+      try {
+        const resp = await fetch(url)
+        if (!resp.ok) return
+        const payload = (await resp.json()) as EditorPayload
+        let saved: EditsMap = {}
+        try {
+          const raw = localStorage.getItem(`mf_edits_${projectId}`)
+          if (raw) saved = JSON.parse(raw)
+        } catch {}
+        const bubbles = payload.bubbles.map((b) => {
+          const e = saved[b.id]
+          return e ? { ...b, en_text: e.en_text ?? b.en_text, font_size: e.font_size ?? b.font_size } : b
+        })
+        set({ editor: { ...payload, bubbles }, edits: saved })
+      } catch {}
     }
   },
 
   applyingEdits: false,
   exports: undefined,
-  async applyEdits() {
-    const taskId = get().taskId
-    const currentResult = get().result
-    if (!taskId || !currentResult) return
-    // Build edits array from local edits map; include only changed fields
+  async applyEdits(getToken) {
+    const projectId = get().projectId
+    if (!projectId) return
+
     const editsMap = get().edits
-    const editor = get().editor
-    const editsArr: { id: number; en_text?: string; font_size?: number }[] = []
-    const bubbles = editor?.bubbles || []
-    for (const b of bubbles) {
-      const e = editsMap[b.id]
-      if (!e) continue
-      const payload: { id: number; en_text?: string; font_size?: number } = { id: b.id }
-      if (typeof e.en_text === 'string') payload.en_text = e.en_text
-      if (typeof e.font_size === 'number') payload.font_size = e.font_size
-      editsArr.push(payload)
-    }
-    // Always proceed to trigger server-side typesetting even if no local diffs
+    const editsArr = Object.entries(editsMap).map(([id, patch]) => ({ id: Number(id), ...patch }))
+
     set({ applyingEdits: true })
     try {
-      // Enqueue apply-edits task
-      const resp = await fetch(`${API_BASE}/api/v1/jobs/${taskId}/edits`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const token = await getToken()
+      if (!token) throw new Error('Not authenticated')
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+
+      const resp = await fetch(`${API_BASE}/api/v1/projects/${projectId}`, {
+        method: 'PUT',
+        headers,
         body: JSON.stringify({ edits: editsArr }),
       })
-      if (!resp.ok) throw new Error(`Apply edits failed (${resp.status})`)
-      const data = (await resp.json()) as { task_id: string }
-      const editsTaskId = data.task_id
-      // Poll until the edits task is done
-      while (true) {
-        const poll = await pollOnce(editsTaskId)
-        if (poll.state === 'SUCCESS' || poll.state === 'FAILURE') break
+      if (!resp.ok) throw new Error('Apply edits failed')
+      
+      // Poll for updated project status
+      let pollCount = 0
+      while (pollCount < 30) { // 30 second timeout
+        const data = await pollOnce(projectId, getToken)
+        if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+          set({ result: data, state: data.status })
+          if (data.status === 'COMPLETED') {
+            await get().loadEditor(projectId, data)
+          }
+          break
+        }
         await new Promise((r) => setTimeout(r, 1000))
+        pollCount++
       }
-      // Fetch latest exports
-      const expResp = await fetch(`${API_BASE}/api/v1/jobs/${taskId}/exports`)
-      if (expResp.ok) {
-        const expData = (await expResp.json()) as { final_url?: string; text_layer_url?: string }
-        set({ exports: { final_url: expData.final_url, text_layer_url: expData.text_layer_url } })
-      }
-      // Refresh editor payload to reflect normalized font sizes/text
-      await get().loadEditor(taskId, currentResult)
     } catch (err) {
       // surface error in store.error without breaking app
       const message = err instanceof Error ? err.message : String(err)
@@ -210,42 +224,71 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }
   },
   downloadUrl() {
-    const id = get().taskId
+    const id = get().projectId
     if (!id) return undefined
-    return `${API_BASE}/api/v1/jobs/${id}/download`
+    return `${API_BASE}/api/v1/projects/${id}/download`
   },
 
-  async start(file: File) {
+  async downloadFile(getToken) {
+    const projectId = get().projectId
+    if (!projectId) return
+    const token = await getToken()
+    if (!token) throw new Error('Not authenticated')
+    const resp = await fetch(`${API_BASE}/api/v1/projects/${projectId}/download`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!resp.ok) throw new Error(`Download failed (${resp.status})`)
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `mangafuse_${projectId}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
+
+  async start(file, getToken) {
     set({ error: undefined, result: undefined, state: 'PENDING' })
-    const depth = get().depth
-    const id = await uploadAndStart(file, depth)
-    set({ taskId: id, state: 'STARTED' })
-    const timer = window.setInterval(async () => {
-      try {
-        const data = await pollOnce(id)
-        set({ state: data.state, meta: data.meta })
-        if (data.state === 'SUCCESS') {
-          set({ result: data.result })
-          // attempt to load editor payload for After state
-          if (data.result) {
-            await get().loadEditor(id, data.result)
+    try {
+      const { projectId, taskId } = await uploadAndStart(file, getToken)
+      set({ projectId, taskId, state: 'PROCESSING' })
+      const timer = window.setInterval(async () => {
+        try {
+          const data = await pollOnce(projectId, getToken)
+          set({ state: data.status, meta: data.meta })
+          if (data.status === 'COMPLETED') {
+            set({ result: data })
+            await get().loadEditor(projectId, data)
+            window.clearInterval(timer)
+          } else if (data.status === 'FAILED') {
+            set({ error: data.error || 'Task failed' })
+            window.clearInterval(timer)
           }
-          window.clearInterval(timer)
-        } else if (data.state === 'FAILURE') {
-          set({ error: data.error || 'Task failed' })
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err)
+          set({ error: message })
           window.clearInterval(timer)
         }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
-        set({ error: message })
-        window.clearInterval(timer)
-      }
-    }, 1000)
+      }, 1000)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      set({ error: message })
+    }
   },
 
   reset() {
-    set({ taskId: '', state: 'PENDING', meta: undefined, result: undefined, error: undefined, editor: undefined, selectedBubbleId: undefined, edits: {} })
+    set({
+      projectId: '',
+      taskId: '',
+      state: 'PENDING',
+      meta: undefined,
+      result: undefined,
+      error: undefined,
+      editor: undefined,
+      selectedBubbleId: undefined,
+      edits: {},
+    })
   },
 }))
-
-

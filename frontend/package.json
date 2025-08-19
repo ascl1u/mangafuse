@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@clerk/clerk-react": "^5.42.1",
     "@tailwindcss/vite": "^4.1.11",
+    "axios": "^1.11.0",
     "konva": "^9.3.22",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

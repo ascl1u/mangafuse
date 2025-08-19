@@ -7,5 +7,7 @@ celery
 python-multipart
 sqlmodel
 alembic
+psycopg
 psycopg[binary]
-
+svix
+clerk_backend_api

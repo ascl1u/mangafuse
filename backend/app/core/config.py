@@ -30,6 +30,32 @@ class Settings(BaseSettings):
         description="SQLAlchemy URL to the primary database (e.g., postgresql+psycopg://user:pass@host:5432/db)",
     )
 
+    # Clerk (Auth) configuration
+    clerk_issuer: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CLERK_ISSUER"),
+        description="Expected Clerk JWT issuer, e.g. https://your-app.clerk.accounts.dev",
+    )
+    clerk_jwks_url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CLERK_JWKS_URL"),
+        description="Override JWKS URL. If not provided, derived as {issuer}/.well-known/jwks.json",
+    )
+    clerk_webhook_secret: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CLERK_WEBHOOK_SECRET"),
+        description="Secret used to verify Clerk webhooks (svix)",
+    )
+    clerk_secret_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CLERK_SECRET_KEY"),
+        description="Clerk secret key for backend API calls",
+    )
+    authorized_parties: list[str] = Field(
+        default=[],
+        description="A list of authorized parties for JWT audience verification.",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -59,5 +85,3 @@ def get_settings() -> Settings:
     load_dotenv(override=False)
 
     return Settings()
-
-

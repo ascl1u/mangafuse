@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useAppStore } from './store'
 import { EditorCanvas } from './editor/EditorCanvas'
 import { SelectedBubblePanel } from './editor/SelectedBubblePanel'
+import { SignedIn, SignedOut, SignInButton, SignUpButton, UserButton, useAuth } from '@clerk/clerk-react'
 
 function ProgressBar({ progress }: { progress: number }) {
   const pct = Math.max(0, Math.min(100, Math.round(progress * 100)))
@@ -13,13 +14,13 @@ function ProgressBar({ progress }: { progress: number }) {
 }
 
 export default function App() {
+  const { isSignedIn, getToken } = useAuth()
   const [file, setFile] = useState<File | null>(null)
   const depth = useAppStore((s) => s.depth)
   const setDepth = useAppStore((s) => s.setDepth)
-  const taskId = useAppStore((s) => s.taskId)
+  const projectId = useAppStore((s) => s.projectId)
   const state = useAppStore((s) => s.state)
   const meta = useAppStore((s) => s.meta)
-  const result = useAppStore((s) => s.result)
   const error = useAppStore((s) => s.error)
   const start = useAppStore((s) => s.start)
 
@@ -29,7 +30,7 @@ export default function App() {
       alert('Please choose a file')
       return
     }
-    await start(file)
+    await start(file, getToken)
   }
 
   const editor = useAppStore((s) => s.editor)
@@ -39,17 +40,9 @@ export default function App() {
   const updateEdit = useAppStore((s) => s.updateEdit)
   const applyEdits = useAppStore((s) => s.applyEdits)
   const applyingEdits = useAppStore((s) => s.applyingEdits)
-  const exportsData = useAppStore((s) => s.exports)
-  const downloadUrl = useAppStore((s) => s.downloadUrl)
+  const downloadFile = useAppStore((s) => s.downloadFile)
 
-  const mainImageUrl = useMemo(() => {
-    if (result?.final_url && depth === 'full') return result.final_url
-    return result?.cleaned_url
-  }, [result, depth])
-  const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
-  const toAbsolute = (url?: string) => (url ? `${API_BASE}${url}` : undefined)
-
-  const showAfter = state === 'SUCCESS' && editor
+  const showAfter = state === 'COMPLETED' && editor
 
   return (
     <div className="min-h-screen w-full bg-gray-50">
@@ -59,7 +52,13 @@ export default function App() {
           <div className="flex items-center gap-3">
             <a href="#" aria-label="X" className="text-gray-600">X</a>
             <a href="#" className="text-gray-600">Credits</a>
-            <a href="#" className="text-gray-600">Auth</a>
+            <SignedOut>
+              <SignInButton />
+              <SignUpButton />
+            </SignedOut>
+            <SignedIn>
+              <UserButton />
+            </SignedIn>
           </div>
         </div>
       </header>
@@ -76,13 +75,18 @@ export default function App() {
             <div className="space-y-4">
               <div className="bg-white p-4 rounded border">
                 <div className="font-medium mb-2">Upload</div>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
-                  className="block w-full text-sm text-gray-900 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                  required
-                />
+                <SignedIn>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    className="block w-full text-sm text-gray-900 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    required
+                  />
+                </SignedIn>
+                <SignedOut>
+                  <div className="text-sm text-gray-600">Please sign in to upload and process pages.</div>
+                </SignedOut>
               </div>
               <div className="bg-white p-4 rounded border">
                 <div className="font-medium mb-2">Mode</div>
@@ -96,12 +100,12 @@ export default function App() {
                 </label>
               </div>
               <div className="bg-white p-4 rounded border">
-                <button type="submit" className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 w-full">
+                <button type="submit" className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 w-full" disabled={!isSignedIn}>
                   Submit
                 </button>
-                {taskId && (
+                {projectId && (
                   <div className="mt-3 space-y-2">
-                    <div className="text-sm text-gray-600">Task: {taskId}</div>
+                    <div className="text-sm text-gray-600">Project: {projectId}</div>
                     {meta?.progress !== undefined && <ProgressBar progress={meta.progress} />}
                     <div className="text-sm">State: {state}{meta?.stage ? ` — ${meta.stage}` : ''}</div>
                   </div>
@@ -128,21 +132,19 @@ export default function App() {
               <div className="bg-white p-4 rounded border">
                 <div className="font-medium mb-2">Download</div>
                 <div className="flex items-center gap-2">
-                  <a
+                  <button
                     className="px-3 py-2 rounded bg-gray-800 text-white"
-                    href={downloadUrl()}
-                    target="_blank"
-                    rel="noreferrer"
+                    onClick={() => downloadFile(getToken)}
                   >
                     Download
-                  </a>
+                  </button>
                 </div>
               </div>
               <div className="bg-white p-4 rounded border">
                 <div className="font-medium mb-2">Actions</div>
                 <button
                   className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-                  onClick={applyEdits}
+                  onClick={() => applyEdits(getToken)}
                   disabled={applyingEdits}
                 >
                   {applyingEdits ? 'Applying…' : 'Apply edits'}
@@ -173,4 +175,3 @@ export default function App() {
     </div>
   )
 }
-

@@ -1,61 +1,140 @@
 from __future__ import annotations
 
 import logging
-import os
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict
 
 from app.worker.celery_app import celery_app
-from app.pipeline.utils.io import ensure_dir
-from app.core.paths import get_job_dir
 from app.pipeline.orchestrator import run_pipeline as orchestrator_run_pipeline, apply_edits as orchestrator_apply_edits
-
+from app.core.storage import get_storage_service
+from app.db.session import worker_session_scope
+from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus
+from sqlmodel import select
 
 logger = logging.getLogger(__name__)
 
 
 @celery_app.task(bind=True, name="app.worker.tasks.process_page_task")
-def process_page_task(
-    self,
-    image_path: str,
-    *,
-    depth: Literal["cleaned", "full"] = "cleaned",
-    debug: bool = False,
-    force: bool = False,
-    seg_model_path: Optional[str] = None,
-    font_path: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Run the MangaFuse pipeline for a single page according to depth.
+def process_page_task(self, project_id: str) -> Dict[str, Any]:
+    """Run the MangaFuse pipeline for a project."""
+    storage = get_storage_service()
+    with worker_session_scope() as session:
+        project = session.get(Project, project_id)
+        if not project:
+            logger.error("Project not found", extra={"project_id": project_id})
+            return {"error": "Project not found"}
 
-    Delegates to the pipeline orchestrator. Writes artifacts under artifacts/jobs/{task_id}/.
-    """
-    task_id: str = str(getattr(self.request, "id", "unknown"))
-    job_dir = get_job_dir(task_id)
-    ensure_dir(job_dir)
-    ensure_dir(job_dir / "masks")
+        source_artifact = session.exec(
+            select(ProjectArtifact).where(
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == ArtifactType.SOURCE_RAW,
+            )
+        ).first()
+        if not source_artifact:
+            project.status = ProjectStatus.FAILED
+            project.failure_reason = "Source artifact not found"
+            session.add(project)
+            return {"error": "Source artifact not found"}
 
-    # Progress helper passed to orchestrator
-    def _update(stage: str, progress: float) -> None:
-        self.update_state(state="PROGRESS", meta={"stage": stage, "progress": progress})
+        # Capture storage key before leaving the session to avoid detached instance issues
+        source_storage_key = source_artifact.storage_key
 
-    result = orchestrator_run_pipeline(
-        job_id=task_id,
-        image_path=image_path,
-        depth=depth,
-        debug=debug,
-        force=force,
-        seg_model_path=seg_model_path,
-        font_path=font_path,
-        progress_callback=_update,
-    )
-    # augment payload with urls including task_id
-    result["task_id"] = task_id
-    return result
+        project.status = ProjectStatus.PROCESSING
+        session.add(project)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / "source_image"
+        with open(tmp_path, "wb") as f:
+            with storage.get_artifact(source_storage_key) as rf:
+                f.write(rf.read())
+
+        def _update(stage: str, progress: float) -> None:
+            self.update_state(state="PROGRESS", meta={"stage": stage, "progress": progress})
+
+        try:
+            result = orchestrator_run_pipeline(
+                job_id=project_id,
+                image_path=str(tmp_path),
+                depth="full",  # Simplified for now
+                progress_callback=_update,
+            )
+
+            with worker_session_scope() as session:
+                project = session.get(Project, project_id)
+                # Upload artifacts
+                for artifact_type, artifact_path in result["artifacts"].items():
+                    # Read file fully before writing to avoid truncation when src == dest
+                    with open(artifact_path, "rb") as f:
+                        payload = f.read()
+                    storage_key = storage.save_artifact(project_id, Path(artifact_path).name, payload)
+                    # Upsert artifact record for idempotency
+                    existing = session.exec(
+                        select(ProjectArtifact).where(
+                            ProjectArtifact.project_id == project_id,
+                            ProjectArtifact.artifact_type == ArtifactType(artifact_type),
+                        )
+                    ).first()
+                    if existing:
+                        existing.storage_key = storage_key
+                        session.add(existing)
+                    else:
+                        artifact = ProjectArtifact(
+                            project_id=project_id,
+                            artifact_type=ArtifactType(artifact_type),
+                            storage_key=storage_key,
+                        )
+                        session.add(artifact)
+
+                project.status = ProjectStatus.COMPLETED
+                project.editor_data = result["editor_payload"]
+                session.add(project)
+            return {"project_id": project_id, "status": "completed"}
+
+        except Exception as e:
+            logger.exception("Pipeline failed", extra={"project_id": project_id})
+            with worker_session_scope() as session:
+                project = session.get(Project, project_id)
+                project.status = ProjectStatus.FAILED
+                project.failure_reason = str(e)
+                session.add(project)
+            raise
 
 
 @celery_app.task(bind=True, name="app.worker.tasks.apply_edits_task")
-def apply_edits_task(self, original_task_id: str, edits: list[dict]) -> Dict[str, Any]:
-    """Apply user edits to an existing job and re-typeset the final image."""
-    result = orchestrator_apply_edits(original_task_id, edits)
-    logger.info("task_completed", extra={"task": "apply_edits_task", "result": result})
-    return result
+def apply_edits_task(self, project_id: str) -> Dict[str, Any]:
+    """Apply user edits and re-typeset."""
+    storage = get_storage_service()
+    with worker_session_scope() as session:
+        project = session.get(Project, project_id)
+        if not project or not project.editor_data:
+            return {"error": "Project or editor data not found"}
+
+        edits = project.editor_data.get("edits", [])
+        result = orchestrator_apply_edits(project_id, edits)
+
+        # Upload new artifacts
+        for artifact_type, artifact_path in result["artifacts"].items():
+            with open(artifact_path, "rb") as f:
+                payload = f.read()
+            storage_key = storage.save_artifact(project_id, Path(artifact_path).name, payload)
+            
+            # Update existing artifact or create new one
+            existing_artifact = session.exec(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.project_id == project_id,
+                    ProjectArtifact.artifact_type == ArtifactType(artifact_type),
+                )
+            ).first()
+            if existing_artifact:
+                existing_artifact.storage_key = storage_key
+                session.add(existing_artifact)
+            else:
+                new_artifact = ProjectArtifact(
+                    project_id=project_id,
+                    artifact_type=ArtifactType(artifact_type),
+                    storage_key=storage_key,
+                )
+                session.add(new_artifact)
+        
+        return {"project_id": project_id, "status": "edits applied"}

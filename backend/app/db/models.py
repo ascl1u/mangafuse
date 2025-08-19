@@ -3,11 +3,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, SQLModel
 
 
 class ProjectStatus(str, Enum):
@@ -53,8 +53,6 @@ class User(SQLModel, table=True):
         )
     )
 
-    projects: List["Project"] = Relationship(back_populates="user")
-
 
 class Project(SQLModel, table=True):
     __tablename__ = "projects"
@@ -88,9 +86,6 @@ class Project(SQLModel, table=True):
         )
     )
 
-    user: Optional[User] = Relationship(back_populates="projects")
-    artifacts: List["ProjectArtifact"] = Relationship(back_populates="project")
-
 
 class ProjectArtifact(SQLModel, table=True):
     __tablename__ = "project_artifacts"
@@ -110,8 +105,6 @@ class ProjectArtifact(SQLModel, table=True):
         )
     )
 
-    project: Optional[Project] = Relationship(back_populates="artifacts")
-
 
 __all__ = [
     "User",
@@ -120,5 +113,3 @@ __all__ = [
     "ProjectStatus",
     "ArtifactType",
 ]
-
-

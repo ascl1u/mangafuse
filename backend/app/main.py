@@ -10,12 +10,18 @@ from app.api.v1.routes import router as api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.paths import get_artifacts_root, get_assets_root
+from app.db.session import create_engine_and_sessionmaker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: D401 - FastAPI lifespan signature
     settings = get_settings()
     configure_logging(settings.log_level)
+
+    engine, sessionmaker = create_engine_and_sessionmaker()
+    app.state.db_engine = engine
+    app.state.db_sessionmaker = sessionmaker
+
     logging.getLogger(__name__).info(
         "app_start",
         extra={
@@ -25,6 +31,7 @@ async def lifespan(app: FastAPI):  # noqa: D401 - FastAPI lifespan signature
         },
     )
     yield
+    app.state.db_engine.dispose()
     logging.getLogger(__name__).info("app_stop")
 
 
@@ -52,5 +59,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-
