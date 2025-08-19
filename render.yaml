@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: mangafuse-backend
+    env: python
+    rootDir: backend
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /api/v1/readyz
+    buildCommand: bash install.sh
+    preDeployCommand: alembic upgrade head
+    startCommand: bash start.sh
+    envVars:
+      # Attach your secret group created in Render UI with DB, Redis, Clerk, R2, etc.
+      - fromGroup: mangafuse-prod
+      # Pin Python version explicitly (optional)
+      - key: PYTHON_VERSION
+        value: 3.11.7
+
+# Optional: define the env var group here only if you want non-secret defaults tracked in Git.
+# Typically you'll create the group in Render UI named "mangafuse-prod" and add secrets there.
+# envVarGroups:
+#   - name: mangafuse-prod
+#     envVars:
+#       - key: APP_ENV
+#         value: production
+#       - key: LOG_LEVEL
+#         value: info
+#       # Add DATABASE_URL, REDIS_URL, CLERK_*, R2_* in the Render UI for security
+
+
