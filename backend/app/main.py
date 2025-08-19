@@ -49,9 +49,11 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router)
 
-    # Serve artifacts/ for local verification (dev) and assets/ for font/model delivery
+    # Serve artifacts/ only in development (local filesystem storage)
     artifacts_dir = get_artifacts_root()
-    app.mount("/artifacts", StaticFiles(directory=str(artifacts_dir), html=False), name="artifacts")
+    if settings.app_env == "development":
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/artifacts", StaticFiles(directory=str(artifacts_dir), html=False), name="artifacts")
     assets_dir = get_assets_root()
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir), html=False), name="assets")
