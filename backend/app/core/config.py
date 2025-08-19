@@ -56,6 +56,42 @@ class Settings(BaseSettings):
         description="A list of authorized parties for JWT audience verification.",
     )
 
+    # Cloudflare R2 (S3-compatible) configuration
+    r2_account_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("R2_ACCOUNT_ID"),
+        description="Cloudflare account ID for R2 endpoint construction",
+    )
+    r2_bucket_name: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("R2_BUCKET_NAME"),
+        description="Cloudflare R2 bucket name",
+    )
+    r2_access_key_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("R2_ACCESS_KEY_ID"),
+        description="Access key ID for R2 S3 API",
+    )
+    r2_secret_access_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("R2_SECRET_ACCESS_KEY"),
+        description="Secret access key for R2 S3 API",
+    )
+    r2_access_token: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("R2_ACCESS_TOKEN"),
+        description="Optional Cloudflare API token (not required for S3 presign)",
+    )
+    r2_presign_expiration_seconds: int = Field(
+        default=3600,
+        description="Expiration (seconds) for presigned URLs",
+    )
+    r2_endpoint_override: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("R2_S3_ENDPOINT", "R2_ENDPOINT_URL"),
+        description="Override the default constructed R2 S3 endpoint URL",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -69,6 +105,14 @@ class Settings(BaseSettings):
     @property
     def effective_result_backend(self) -> Optional[str]:
         return self.celery_result_backend or self.redis_url
+
+    @property
+    def r2_endpoint_url(self) -> Optional[str]:
+        if self.r2_endpoint_override:
+            return self.r2_endpoint_override
+        if not self.r2_account_id:
+            return None
+        return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
 
 
 @lru_cache(maxsize=1)

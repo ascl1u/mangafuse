@@ -61,11 +61,10 @@ def get_upload_url(
     storage: StorageService = Depends(get_storage_service),
 ) -> Dict[str, str]:
     """Get a URL to upload a source file."""
-    # In the future, this will generate a presigned URL for direct-to-cloud upload.
-    # For local dev, it just confirms the user is authenticated and returns a path.
     project_id = str(uuid.uuid4())
     url = storage.get_upload_url(project_id, filename)
-    return {"project_id": project_id, "url": url}
+    planned_key = storage.get_planned_upload_storage_key(project_id, filename)
+    return {"project_id": project_id, "url": url, "storage_key": planned_key}
 
 
 @router.post("/projects", summary="Create a new project", status_code=status.HTTP_202_ACCEPTED)

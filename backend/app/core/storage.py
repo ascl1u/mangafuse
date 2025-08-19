@@ -18,6 +18,11 @@ class StorageService(ABC):
         pass
 
     @abstractmethod
+    def get_planned_upload_storage_key(self, project_id: str, filename: str) -> str:
+        """Return the storage key that will be used for the client direct upload."""
+        pass
+
+    @abstractmethod
     def get_download_url(self, storage_key: str) -> str:
         """Generate a URL for the client to download a file."""
         pass
@@ -40,6 +45,10 @@ class LocalStorageService(StorageService):
         # For local dev, the "upload URL" is just a server endpoint.
         # The actual file saving will be handled by the endpoint logic.
         return f"/api/v1/projects/{project_id}/upload"
+
+    def get_planned_upload_storage_key(self, project_id: str, filename: str) -> str:
+        # For local dev, mirror the path produced by save_artifact for predictability
+        return f"jobs/{project_id}/{filename}"
 
     def get_download_url(self, storage_key: str) -> str:
         # Expose under FastAPI StaticFiles mount at /artifacts
@@ -71,19 +80,65 @@ class CloudStorageService(StorageService):
     """Storage service for production, using a cloud provider (e.g., R2)."""
 
     def __init__(self):
-        raise NotImplementedError("CloudStorageService is not yet implemented.")
+        # Lazy import so local dev doesn't require boto3
+        import boto3
+        from botocore.config import Config
+
+        settings = get_settings()
+        if not (settings.r2_endpoint_url and settings.r2_bucket_name and settings.r2_access_key_id and settings.r2_secret_access_key):
+            raise RuntimeError("R2 configuration is incomplete. Ensure R2_ACCOUNT_ID (or R2_S3_ENDPOINT), R2_BUCKET_NAME, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are set.")
+
+        self._bucket = settings.r2_bucket_name
+        self._presign_expiration = settings.r2_presign_expiration_seconds
+        # Use path-style addressing for R2 default endpoint
+        self._s3 = boto3.client(
+            "s3",
+            endpoint_url=settings.r2_endpoint_url,
+            aws_access_key_id=settings.r2_access_key_id,
+            aws_secret_access_key=settings.r2_secret_access_key,
+            region_name="auto",
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        )
 
     def get_upload_url(self, project_id: str, filename: str) -> str:
-        raise NotImplementedError
+        key = self.get_planned_upload_storage_key(project_id, filename)
+        return self._s3.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={"Bucket": self._bucket, "Key": key},
+            ExpiresIn=self._presign_expiration,
+        )
+
+    def get_planned_upload_storage_key(self, project_id: str, filename: str) -> str:
+        # Separate upload namespace from generated artifacts
+        return f"uploads/{project_id}/{filename}"
 
     def get_download_url(self, storage_key: str) -> str:
-        raise NotImplementedError
+        return self._s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": self._bucket, "Key": storage_key},
+            ExpiresIn=self._presign_expiration,
+        )
 
     def save_artifact(self, project_id: str, artifact_name: str, data: IO[bytes]) -> str:
-        raise NotImplementedError
+        import mimetypes
+        key = f"jobs/{project_id}/{artifact_name}"
+        # Determine content type; fall back to octet-stream
+        content_type, _ = mimetypes.guess_type(artifact_name)
+        body = data.read() if hasattr(data, "read") else data
+        self._s3.put_object(
+            Bucket=self._bucket,
+            Key=key,
+            Body=body,  # type: ignore[arg-type]
+            ContentType=content_type or "application/octet-stream",
+        )
+        return key
 
     def get_artifact(self, storage_key: str) -> IO[bytes]:
-        raise NotImplementedError
+        import io
+        obj = self._s3.get_object(Bucket=self._bucket, Key=storage_key)
+        # Read fully to return a simple in-memory file-like object
+        payload: bytes = obj["Body"].read()
+        return io.BytesIO(payload)
 
 
 @lru_cache(maxsize=1)

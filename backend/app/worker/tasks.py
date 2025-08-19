@@ -8,6 +8,7 @@ from typing import Any, Dict
 from app.worker.celery_app import celery_app
 from app.pipeline.orchestrator import run_pipeline as orchestrator_run_pipeline, apply_edits as orchestrator_apply_edits
 from app.core.storage import get_storage_service
+from app.core.paths import get_job_dir
 from app.db.session import worker_session_scope
 from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus
 from sqlmodel import select
@@ -110,6 +111,45 @@ def apply_edits_task(self, project_id: str) -> Dict[str, Any]:
         if not project or not project.editor_data:
             return {"error": "Project or editor data not found"}
 
+        # Ensure local job directory exists and required inputs are present
+        job_dir = get_job_dir(project_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1) Download cleaned background image from storage
+        cleaned_artifact = session.exec(
+            select(ProjectArtifact).where(
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == ArtifactType.CLEANED_PAGE,
+            )
+        ).first()
+        # Fallback: if CLEANED_PAGE is missing, try FINAL_PNG as background
+        if not cleaned_artifact:
+            cleaned_artifact = session.exec(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.project_id == project_id,
+                    ProjectArtifact.artifact_type == ArtifactType.FINAL_PNG,
+                )
+            ).first()
+        if not cleaned_artifact:
+            return {"error": "No cleaned or final artifact found for re-typesetting"}
+
+        cleaned_path = job_dir / "cleaned.png"
+        with open(cleaned_path, "wb") as wf:
+            with storage.get_artifact(cleaned_artifact.storage_key) as rf:
+                wf.write(rf.read())
+
+        # 2) Reconstruct text.json from editor_data.bubbles
+        bubbles = project.editor_data.get("bubbles") if isinstance(project.editor_data, dict) else None
+        if not bubbles or not isinstance(bubbles, list):
+            return {"error": "Editor data missing bubbles for re-typesetting"}
+
+        # Minimal writer to match pipeline format: {"bubbles": [...]}
+        import json
+        json_path = job_dir / "text.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"bubbles": bubbles}, f, ensure_ascii=False, indent=2)
+
+        # 3) Invoke orchestrator to apply edits
         edits = project.editor_data.get("edits", [])
         result = orchestrator_apply_edits(project_id, edits)
 
