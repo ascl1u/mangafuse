@@ -49,6 +49,7 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router)
 
+    settings = get_settings()
     # Serve artifacts/ only in development (local filesystem storage)
     artifacts_dir = get_artifacts_root()
     if settings.app_env == "development":
