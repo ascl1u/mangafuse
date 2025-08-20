@@ -390,7 +390,7 @@ def run_pipeline(
 
 
 def apply_edits(
-    job_id: str,
+    job_dir: Path,
     edits: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Apply user edits to an existing job and re-typeset the final image.
@@ -403,10 +403,9 @@ def apply_edits(
     from app.pipeline.typeset.model import BubbleText
     from app.pipeline.typeset.render import render_typeset
     from app.pipeline.utils.io import save_png
+    from app.core.paths import get_assets_root
 
-    repo_root = Path(__file__).resolve().parents[3]
-    job_dir = repo_root / "artifacts" / "jobs" / job_id
-    masks_dir = job_dir / "masks"
+    job_id = job_dir.name
     json_path = job_dir / "text.json"
     cleaned_path = job_dir / "cleaned.png"
     final_path = job_dir / "final.png"
@@ -449,8 +448,7 @@ def apply_edits(
     save_text_records(json_path, bubbles)
 
     # Resolve font path (defaults)
-    default_font = repo_root / "assets" / "fonts" / "animeace2_reg.ttf"
-    font = default_font
+    font = get_assets_root() / "fonts" / "animeace2_reg.ttf"
 
     records: List[BubbleText] = []
     for rec in bubbles:
@@ -561,5 +559,3 @@ def apply_edits(
     if artifacts:
         result["artifacts"] = artifacts
     return result
-
-

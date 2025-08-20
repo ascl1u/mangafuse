@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { getUploader } from './uploader'
 
 export type Depth = 'cleaned' | 'full'
 
@@ -29,14 +30,11 @@ async function uploadAndStart(file: File, getToken: () => Promise<string | null>
     headers,
   })
   if (!uploadUrlResp.ok) throw new Error('Failed to get upload URL')
-  const { project_id: projectId, url: uploadUrl } = await uploadUrlResp.json()
+  const { project_id: projectId, url: uploadUrl, storage_key: storageKey } = await uploadUrlResp.json()
 
-  // 2. Upload file (multipart/form-data with field name 'file')
-  const form = new FormData()
-  form.append('file', file)
-  const uploadResp = await fetch(`${API_BASE}${uploadUrl}`, { method: 'POST', body: form, headers })
-  if (!uploadResp.ok) throw new Error('Upload failed')
-  const { storage_key: storageKey } = await uploadResp.json()
+  // 2. Upload the file using the appropriate strategy for the environment.
+  const uploader = getUploader()
+  await uploader.upload(file, uploadUrl, headers)
 
   // 3. Create project and start processing
   const createProjectResp = await fetch(`${API_BASE}/api/v1/projects?project_id=${projectId}&filename=${encodeURIComponent(file.name)}&storage_key=${storageKey}`, {
@@ -149,7 +147,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
       try {
         const raw = localStorage.getItem(`mf_edits_${projectId}`)
         if (raw) saved = JSON.parse(raw)
-      } catch {}
+      } catch {
+        // ignore storage failures in MVP
+      }
       const bubbles = result.editor_data.bubbles.map((b) => {
         const e = saved[b.id]
         return e ? { ...b, en_text: e.en_text ?? b.en_text, font_size: e.font_size ?? b.font_size } : b
@@ -169,13 +169,17 @@ export const useAppStore = create<StoreState>((set, get) => ({
         try {
           const raw = localStorage.getItem(`mf_edits_${projectId}`)
           if (raw) saved = JSON.parse(raw)
-        } catch {}
+        } catch {
+          // ignore storage failures in MVP
+        }
         const bubbles = payload.bubbles.map((b) => {
           const e = saved[b.id]
           return e ? { ...b, en_text: e.en_text ?? b.en_text, font_size: e.font_size ?? b.font_size } : b
         })
         set({ editor: { ...payload, bubbles }, edits: saved })
-      } catch {}
+      } catch {
+        // ignore fetch/parse failures
+      }
     }
   },
 

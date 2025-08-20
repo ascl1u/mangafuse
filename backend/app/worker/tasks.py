@@ -151,7 +151,7 @@ def apply_edits_task(self, project_id: str) -> Dict[str, Any]:
 
         # 3) Invoke orchestrator to apply edits
         edits = project.editor_data.get("edits", [])
-        result = orchestrator_apply_edits(project_id, edits)
+        result = orchestrator_apply_edits(job_dir, edits)
 
         # Upload new artifacts
         for artifact_type, artifact_path in result["artifacts"].items():
