@@ -6,5 +6,5 @@ __pycache__/
 *$py.class
 .env
 artifacts/
-assets/
+/assets/samples
 issues.md
