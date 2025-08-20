@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
+from app.core.config import get_settings
 
 
 @lru_cache(maxsize=1)
@@ -26,12 +27,18 @@ def get_repo_root() -> Path:
 
 @lru_cache(maxsize=1)
 def get_artifacts_root() -> Path:
+    settings = get_settings()
+    if settings.artifacts_dir:
+        return Path(settings.artifacts_dir)
     path = os.getenv("ARTIFACTS_ROOT")
     return Path(path) if path else (get_repo_root() / "artifacts")
 
 
 @lru_cache(maxsize=1)
 def get_assets_root() -> Path:
+    settings = get_settings()
+    if settings.assets_dir:
+        return Path(settings.assets_dir)
     path = os.getenv("ASSETS_ROOT")
     return Path(path) if path else (get_repo_root() / "assets")
 
@@ -43,6 +50,3 @@ def get_job_dir(task_id: str) -> Path:
 @lru_cache(maxsize=1)
 def get_uploads_dir() -> Path:
     return get_artifacts_root() / "uploads"
-
-
-

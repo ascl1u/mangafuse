@@ -56,6 +56,19 @@ class Settings(BaseSettings):
         description="A list of authorized parties for JWT audience verification.",
     )
 
+    # Filesystem configuration
+    assets_dir: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("ASSETS_DIR"),
+        description="Path to the assets directory (models, fonts). If not set, inferred from app layout.",
+    )
+
+    artifacts_dir: Optional[str]= Field(
+        default=None,
+        validation_alias=AliasChoices("ARTIFACTS_DIR"),
+        description="Path to the artifacts directory"
+    )
+
     # Cloudflare R2 (S3-compatible) configuration
     r2_account_id: Optional[str] = Field(
         default=None,
