@@ -7,30 +7,6 @@ import cv2  # type: ignore
 import numpy as np
 
 
-def _mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
-    """Calculates the Intersection over Union (IoU) for two binary masks."""
-    # Ensure masks are boolean
-    mask_a = mask_a.astype(bool)
-    mask_b = mask_b.astype(bool)
-
-    intersection = np.logical_and(mask_a, mask_b).sum()
-    if intersection == 0:
-        return 0.0
-
-    union = np.logical_or(mask_a, mask_b).sum()
-    return float(intersection) / float(max(1, union))
-
-
-def _apply_mask_nms(
-    masks: List[np.ndarray],
-    polygons: List[List[Tuple[float, float]]],
-    confidences: List[float],
-    iou_thresh: float,
-) -> Dict[str, List]:
-    """Deprecated: rely on Ultralytics NMS. Kept for backward compatibility."""
-    return {"masks": masks, "polygons": polygons, "confidences": confidences}
-
-
 def _parse_yolo_results(result: Any) -> Dict[str, List]:
     """
     Parses the raw result object from a YOLOv8 prediction.
