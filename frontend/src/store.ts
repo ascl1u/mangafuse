@@ -207,7 +207,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       
       // Poll for updated project status
       let pollCount = 0
-      while (pollCount < 30) { // 30 second timeout
+      while (pollCount < 30) { // total wait window depends on interval; 30 iterations at 30s = 15 minutes
         const data = await pollOnce(projectId, getToken)
         if (data.status === 'COMPLETED' || data.status === 'FAILED') {
           set({ result: data, state: data.status })
@@ -216,7 +216,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           }
           break
         }
-        await new Promise((r) => setTimeout(r, 1000))
+        await new Promise((r) => setTimeout(r, 30000))
         pollCount++
       }
     } catch (err) {
@@ -275,7 +275,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           set({ error: message })
           window.clearInterval(timer)
         }
-      }, 1000)
+      }, 30000)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
       set({ error: message })
