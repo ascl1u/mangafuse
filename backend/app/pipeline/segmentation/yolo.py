@@ -27,40 +27,8 @@ def _apply_mask_nms(
     confidences: List[float],
     iou_thresh: float,
 ) -> Dict[str, List]:
-    """
-    Applies Non-Maximum Suppression using Mask IoU to filter overlapping detections.
-
-    Args:
-        masks: A list of binary mask arrays.
-        polygons: A list of polygon coordinate lists.
-        confidences: A list of detection confidence scores.
-        iou_thresh: The IoU threshold to use for suppression.
-
-    Returns:
-        A dictionary containing the filtered lists of masks, polygons, and confidences.
-    """
-    if not masks:
-        return {"masks": [], "polygons": [], "confidences": []}
-
-    # Sort indices by confidence in descending order
-    order = sorted(range(len(confidences)), key=lambda i: confidences[i], reverse=True)
-
-    keep_indices: List[int] = []
-    for i in order:
-        is_overlapping = False
-        for j in keep_indices:
-            if _mask_iou(masks[i], masks[j]) >= iou_thresh:
-                is_overlapping = True
-                break
-        if not is_overlapping:
-            keep_indices.append(i)
-
-    # Filter all lists based on the kept indices
-    return {
-        "masks": [masks[i] for i in keep_indices],
-        "polygons": [polygons[i] for i in keep_indices],
-        "confidences": [confidences[i] for i in keep_indices],
-    }
+    """Deprecated: rely on Ultralytics NMS. Kept for backward compatibility."""
+    return {"masks": masks, "polygons": polygons, "confidences": confidences}
 
 
 def _parse_yolo_results(result: Any) -> Dict[str, List]:
@@ -80,35 +48,18 @@ def _parse_yolo_results(result: Any) -> Dict[str, List]:
     if getattr(result, "masks", None) is None:
         return {"masks": [], "polygons": [], "confidences": []}
 
-    # Extract binary masks directly from the tensor data
-    if hasattr(result.masks, "data") and result.masks.data is not None:
-        for mask_tensor in result.masks.data.cpu().numpy():
-            # Binarize the mask using the 0.5 threshold
-            masks.append((mask_tensor > 0.5).astype(np.uint8))
-
-    # Extract polygons, with a fallback to generate them from masks
+    # Prefer vector polygons; avoid allocating full-resolution masks
     if hasattr(result.masks, "xy") and result.masks.xy is not None and len(result.masks.xy) > 0:
         for poly in result.masks.xy:
             polygons.append([(float(x), float(y)) for x, y in poly])
-    else:
-        # Fallback: if no polygons are in the result, generate them from the masks
-        for mask in masks:
-            mask_u8 = mask * 255
-            contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not contours:
-                continue
-            # Use the largest contour as the polygon
-            contour = max(contours, key=cv2.contourArea).squeeze(1)
-            polygons.append([(float(x), float(y)) for x, y in contour])
 
     # Extract confidences
     if hasattr(result, "boxes") and getattr(result.boxes, "conf", None) is not None:
         confidences = [float(c) for c in result.boxes.conf.cpu().numpy()]
 
-    # Ensure all lists are of the same length to prevent errors
-    n = min(len(masks), len(polygons), len(confidences))
+    n = min(len(polygons), len(confidences))
     return {
-        "masks": masks[:n],
+        "masks": [],  # no mask arrays; consumers should rasterize polygons on demand
         "polygons": polygons[:n],
         "confidences": confidences[:n],
     }
@@ -156,12 +107,13 @@ def run_segmentation(
 
     imgsz = _round_to_multiple_of_32(max(img_h, img_w))
 
-    # 2. Run Prediction
+    # 2. Run Prediction (use Ultralytics' own NMS via iou)
     results = model.predict(
         source=image_bgr,
         imgsz=imgsz,
-        retina_masks=True,  # Crucial for high-res masks at original image size
+        retina_masks=False,  # less memory; we'll use polygons and rasterize when needed
         conf=conf_thresh,
+        iou=nms_iou_thresh,
         verbose=False,
     )
     if not results:
@@ -171,17 +123,9 @@ def run_segmentation(
     # This step extracts masks, polygons, and confidences from the YOLO object.
     parsed_data = _parse_yolo_results(results[0])
 
-    # 4. Apply Non-Maximum Suppression
-    # This step filters out overlapping detections based on mask IoU.
-    filtered_data = _apply_mask_nms(
-        masks=parsed_data["masks"],
-        polygons=parsed_data["polygons"],
-        confidences=parsed_data["confidences"],
-        iou_thresh=nms_iou_thresh,
-    )
-
+    # 4. Ultralytics has already applied NMS; return polygons/confidences
     return {
-        "polygons": filtered_data["polygons"],
-        "masks": filtered_data["masks"],
-        "confidences": filtered_data["confidences"],
+        "polygons": parsed_data["polygons"],
+        "masks": [],
+        "confidences": parsed_data["confidences"],
     }

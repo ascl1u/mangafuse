@@ -23,12 +23,33 @@ def build_text_inpaint_mask(
     union_text_mask = np.zeros((height, width), dtype=np.uint8)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
 
+    def _rasterize_polygon(poly: List[List[float]]) -> np.ndarray:
+        canvas = np.zeros((height, width), dtype=np.uint8)
+        if not poly:
+            return canvas
+        pts = np.array(poly, dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[0] < 3:
+            return canvas
+        pts_i32 = np.round(pts).astype(np.int32)
+        cv2.fillPoly(canvas, [pts_i32], 1)
+        return canvas
+
     for i, rec in enumerate(bubbles):
         polygon = rec.get("polygon") or []
 
-        if i >= len(instance_masks):
-            continue # Safety check
-        bubble_mask = instance_masks[i]
+        # Prefer provided instance mask if present and correctly sized; otherwise rasterize polygon
+        if i < len(instance_masks):
+            candidate = instance_masks[i]
+            if (
+                isinstance(candidate, np.ndarray)
+                and candidate.shape == (height, width)
+                and np.any(candidate)
+            ):
+                bubble_mask = (candidate > 0).astype(np.uint8)
+            else:
+                bubble_mask = _rasterize_polygon(polygon)
+        else:
+            bubble_mask = _rasterize_polygon(polygon)
         
         # Erode bubble mask to avoid bubble outlines
         interior_mask = (

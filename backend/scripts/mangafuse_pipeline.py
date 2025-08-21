@@ -139,7 +139,7 @@ def run_ocr_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result: Dic
         if not (rec.get("ja_text") is None or config.force):
             continue
         
-        mask_array = masks[i]
+        mask_array = masks[i] if i < len(masks) else None
         polygon = rec.get("polygon", [])
         
         crop_bgr, _ = tight_crop_from_mask(image_bgr, mask_array, polygon)
@@ -211,7 +211,7 @@ def run_inpaint_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result:
     print("Building precise text mask for inpainting...")
     text_mask = build_text_inpaint_mask(
         image_bgr=image_bgr,
-        instance_masks=seg_result.get("masks", []),
+        instance_masks=seg_result.get("masks", []),  # may be empty after polygon-only segmentation
         bubbles=bubble_data
     )
     

@@ -108,7 +108,7 @@ def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
         raise ValueError(f"Mask shape {mask_gray.shape} must match image shape {(h, w)}")
 
     # Parameters tuned for MVP stability and quality
-    DILATION_PX = 8              # add local context around masked text
+    DILATION_PX = 16              # add local context around masked text
     MERGE_GAP_PX = 8             # merge nearby boxes to reduce number of model calls
     MIN_ROI_AREA = 32 * 32       # ignore tiny specks
     SMALL_ROI_AREA = 48 * 48     # use OpenCV inpaint for very small regions
