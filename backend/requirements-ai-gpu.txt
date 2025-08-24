@@ -1,0 +1,22 @@
+# All dependencies EXCEPT torch and torchvision
+# -- Web Service --
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings
+python-dotenv
+httpx
+
+# -- Cloud Storage (for presigned URLs) --
+boto3
+
+# -- AI/ML Pipeline --
+numpy
+pillow
+opencv-python-headless
+shapely
+ultralytics
+
+# -- Other AI Models --
+manga-ocr
+git+https://github.com/ascl1u/simple-lama-inpainting.git

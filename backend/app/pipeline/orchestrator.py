@@ -14,6 +14,8 @@ def run_pipeline(
     seg_model_path: Optional[str] = None,
     font_path: Optional[str] = None,
     progress_callback: Optional[Callable[[str, float], None]] = None,
+    include_typeset: bool = True,
+    include_translate: bool = True,
 ) -> Dict[str, Any]:
     """Execute the full pipeline and return the compact result payload.
 
@@ -37,10 +39,8 @@ def run_pipeline(
     from app.pipeline.ocr.crops import tight_crop_from_mask
     from app.pipeline.ocr.preprocess import binarize_for_ocr
     from app.pipeline.ocr.engine import MangaOcrEngine
-    from app.pipeline.translate.gemini import GeminiTranslator
     from app.pipeline.inpaint.lama import run_inpainting
     from app.pipeline.typeset.model import BubbleText
-    from app.pipeline.typeset.render import render_typeset
     from app.pipeline.inpaint.text_mask import build_text_inpaint_mask
 
     # Determine job directory from image path location convention:
@@ -147,8 +147,10 @@ def run_pipeline(
         _update("ocr_complete", 0.45)
 
     # 3) Translate (full only)
-    if depth == "full" and bubbles:
+    if depth == "full" and include_translate and bubbles:
         _update("translate", 0.5)
+        from app.pipeline.translate.gemini import GeminiTranslator
+
         api_key = os.getenv("GOOGLE_API_KEY", "")
         translator = GeminiTranslator(api_key=api_key)
         indices: List[int] = []
@@ -247,7 +249,9 @@ def run_pipeline(
         _update("inpaint_complete", 0.85)
 
     # 5) Typeset (full only)
-    if depth == "full":
+    if depth == "full" and include_typeset:
+        from app.pipeline.typeset.render import render_typeset
+        
         _update("typeset", 0.9)
         if not cleaned_path.exists():
             raise FileNotFoundError("cleaned.png not found after inpaint stage")

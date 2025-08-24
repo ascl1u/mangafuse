@@ -1,0 +1,51 @@
+# Git and version control
+.git
+.gitignore
+
+# Docker specific files
+Dockerfile
+.dockerignore
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv
+env/
+venv/
+
+# IDE and editor configuration
+.vscode/
+.idea/
+*.swp
+
+# Exclude the entire frontend directory as it's not needed for the GPU service
+frontend/
+
+# Local environment variables
+.env
+*.env
+
+# Documentation and configuration files not needed at runtime
+README.md
+render.yaml
+alembic.ini
+alembic/
+install.sh
+start.sh
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+
+design_doc.md
+*plan.md
+roadmap.md
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+artifacts/
+samples
+issues.md

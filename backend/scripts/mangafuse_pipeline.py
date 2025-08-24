@@ -22,18 +22,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 # --- Local Imports ---
 from app.pipeline.utils.io import ensure_dir, read_image_bgr, save_png
-from app.pipeline.utils.masks import save_masks
-from app.pipeline.segmentation.yolo import run_segmentation
-from app.pipeline.utils.visualization import make_overlay
 from app.pipeline.utils.textio import write_text_json, read_text_json, save_text_records
-from app.pipeline.ocr.crops import tight_crop_from_mask
-from app.pipeline.ocr.preprocess import binarize_for_ocr
-from app.pipeline.ocr.engine import MangaOcrEngine
-from app.pipeline.translate.gemini import GeminiTranslator
-from app.pipeline.inpaint.lama import run_inpainting
-from app.pipeline.typeset.model import BubbleText
-from app.pipeline.typeset.render import render_typeset
-from app.pipeline.inpaint.text_mask import build_text_inpaint_mask
 
 # --- Configuration & State ---
 
@@ -102,6 +91,10 @@ def parse_args() -> argparse.Namespace:
 
 def run_segmentation_stage(config: PipelineConfig, image_bgr: np.ndarray) -> Dict[str, Any]:
     """Detects speech bubbles and returns their data in-memory."""
+    from app.pipeline.segmentation.yolo import run_segmentation
+    from app.pipeline.utils.masks import save_masks
+    from app.pipeline.utils.visualization import make_overlay
+
     print("--- Running Stage: Segmentation ---")
     
     print(f"Running bubble segmentation on {config.image_path.name}...")
@@ -123,6 +116,10 @@ def run_segmentation_stage(config: PipelineConfig, image_bgr: np.ndarray) -> Dic
 
 def run_ocr_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Performs OCR on in-memory bubble data."""
+    from app.pipeline.ocr.crops import tight_crop_from_mask
+    from app.pipeline.ocr.preprocess import binarize_for_ocr
+    from app.pipeline.ocr.engine import MangaOcrEngine
+
     print("--- Running Stage: OCR ---")
     
     bubbles = seg_result.get("bubbles", [])
@@ -162,6 +159,8 @@ def run_ocr_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result: Dic
 
 def run_translation_stage(config: PipelineConfig, bubbles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Translates Japanese text from in-memory bubble data."""
+    from app.pipeline.translate.gemini import GeminiTranslator
+
     print("--- Running Stage: Translation ---")
     
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -202,6 +201,9 @@ def run_translation_stage(config: PipelineConfig, bubbles: List[Dict[str, Any]])
 
 def run_inpaint_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result: Dict[str, Any], bubble_data: List[Dict[str, Any]]) -> np.ndarray:
     """Removes original text from the image using an in-memory workflow."""
+    from app.pipeline.inpaint.lama import run_inpainting
+    from app.pipeline.inpaint.text_mask import build_text_inpaint_mask
+
     print("--- Running Stage: Inpainting ---")
     
     if not config.force and config.cleaned_path.exists():
@@ -237,6 +239,9 @@ def run_inpaint_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result:
 
 def run_typeset_stage(config: PipelineConfig, cleaned_bgr: np.ndarray, bubble_data: List[Dict[str, Any]]):
     """Renders the translated text back into the bubbles using an in-memory image."""
+    from app.pipeline.typeset.model import BubbleText
+    from app.pipeline.typeset.render import render_typeset
+
     print("--- Running Stage: Typesetting ---")
 
     records = []
@@ -286,44 +291,53 @@ def process_image(config: PipelineConfig):
     cleaned_bgr = None
     
     # --- Stage-based execution ---
-    stages_to_run = ["seg", "ocr", "translate", "inpaint", "typeset"]
+    # Order adjusted so that "inpaint" does not implicitly include translation.
+    # GPU service runs seg -> ocr -> inpaint. CPU-only stages (translate, typeset) follow.
+    stages_to_run = ["seg", "ocr", "inpaint", "translate", "typeset"]
+    
+    # Determine the index of the final stage to run
     try:
-        start_index = stages_to_run.index(config.stage)
+        end_index = stages_to_run.index(config.stage) if config.stage != "all" else len(stages_to_run) - 1
     except ValueError:
-        start_index = 0 # 'all'
+        end_index = len(stages_to_run) - 1
 
-    active_stages = stages_to_run[start_index:] if config.stage != "all" else stages_to_run
+    # Define the sequence of stages to execute
+    active_stages = stages_to_run[:end_index + 1]
 
     # Run stages sequentially, passing data in memory
     if "seg" in active_stages:
         seg_result = run_segmentation_stage(config, image_bgr)
     
     if "ocr" in active_stages:
-        if not seg_result: seg_result = run_segmentation_stage(config, image_bgr)
+        if not seg_result:
+            seg_result = run_segmentation_stage(config, image_bgr)
         bubble_data = run_ocr_stage(config, image_bgr, seg_result)
 
     if "translate" in active_stages:
         if not bubble_data:
-            if not seg_result: seg_result = run_segmentation_stage(config, image_bgr)
+            if not seg_result:
+                seg_result = run_segmentation_stage(config, image_bgr)
             bubble_data = run_ocr_stage(config, image_bgr, seg_result)
         bubble_data = run_translation_stage(config, bubble_data)
 
     if "inpaint" in active_stages:
         if not bubble_data:
-            if not seg_result: seg_result = run_segmentation_stage(config, image_bgr)
+            if not seg_result:
+                seg_result = run_segmentation_stage(config, image_bgr)
             bubble_data = run_ocr_stage(config, image_bgr, seg_result)
-            bubble_data = run_translation_stage(config, bubble_data)
         cleaned_bgr = run_inpaint_stage(config, image_bgr, seg_result, bubble_data)
     
     if "typeset" in active_stages:
         if cleaned_bgr is None:
             if not bubble_data:
-                if not seg_result: seg_result = run_segmentation_stage(config, image_bgr)
+                if not seg_result:
+                    seg_result = run_segmentation_stage(config, image_bgr)
                 bubble_data = run_ocr_stage(config, image_bgr, seg_result)
-                bubble_data = run_translation_stage(config, bubble_data)
+            # Typesetting requires translated text if not using placeholders
+            if not config.use_placeholder_text and not any("en_text" in b for b in bubble_data):
+                 bubble_data = run_translation_stage(config, bubble_data)
             cleaned_bgr = run_inpaint_stage(config, image_bgr, seg_result, bubble_data)
         
-        # If running typesetting as a standalone stage, we may still need text.json for debug
         if config.debug or not bubble_data:
              save_text_records(config.json_path, bubble_data)
 

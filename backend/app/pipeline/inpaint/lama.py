@@ -134,18 +134,10 @@ def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("PyTorch is required for inpainting stage") from exc
 
-    original_jit_load = torch.jit.load
-
-    def _jit_load_cpu(path, *args, **kwargs):  # type: ignore[no-untyped-def]
-        if "map_location" not in kwargs:
-            kwargs["map_location"] = "cpu"
-        return original_jit_load(path, *args, **kwargs)
-
-    torch.jit.load = _jit_load_cpu  # type: ignore[assignment]
+    # Initialize model with default device selection; prefer CUDA if available
     try:
         model = SimpleLama()
     except Exception as exc:  # noqa: BLE001
-        torch.jit.load = original_jit_load  # restore early
         raise RuntimeError("SimpleLama inpainting failed to initialize") from exc
 
     # Compose results
@@ -191,7 +183,6 @@ def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
             result[y0:y1, x0:x1] = roi_target
 
     finally:
-        # Restore torch jit loader
-        torch.jit.load = original_jit_load  # type: ignore[assignment]
+        pass
 
     return result

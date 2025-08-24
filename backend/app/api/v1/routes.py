@@ -1,22 +1,27 @@
 from typing import Any, Dict
 import uuid
+import json
+import hmac
+import hashlib
+import base64
+from pathlib import Path
 
-import redis
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Depends, Request
 from fastapi.responses import StreamingResponse
-from celery.result import AsyncResult
 
 from app.core.config import get_settings
-from app.worker.celery_app import celery_app
 from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser, ClerkWebhookEvent
 from app.db.session import check_database_connection
 from app.db.deps import get_current_user, get_db_session
 from sqlmodel import Session, select
-from app.db.models import User, Project, ProjectArtifact, ArtifactType
+from app.db.models import User, Project, ProjectArtifact, ArtifactType, ProjectStatus
 from svix.webhooks import Webhook, WebhookVerificationError
 from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.core.storage import get_storage_service, StorageService
+from app.core.paths import get_job_dir
+from app.pipeline.orchestrator import apply_edits as orchestrator_apply_edits
+from app.core.gpu_client import GpuClient, get_gpu_client
 
 
 router = APIRouter(prefix="/api/v1")
@@ -32,19 +37,14 @@ def healthz() -> Dict[str, str]:
 
 
 @router.get("/readyz", summary="Readiness probe")
-def readyz() -> Dict[str, str]:
+def readyz(request: Request) -> Dict[str, str]:
+    # Check database connectivity and GPU service configuration only
+    if not check_database_connection(request.app.state.db_engine):
+        raise HTTPException(status_code=503, detail="database not reachable")
     settings = get_settings()
-    # If no Redis configured yet, treat as not ready to surface misconfig early.
-    if not settings.effective_broker_url:
-        raise HTTPException(status_code=503, detail="redis not configured")
-    try:
-        client = redis.Redis.from_url(settings.effective_broker_url, socket_connect_timeout=0.5)
-        pong: Any = client.ping()
-        if pong is True:
-            return {"status": "ready"}
-        raise RuntimeError("unexpected redis ping result")
-    except Exception as exc:  # noqa: BLE001 - surface readiness failure as 503
-        raise HTTPException(status_code=503, detail=f"redis not reachable: {exc}")
+    if not settings.gpu_service_base_url:
+        raise HTTPException(status_code=503, detail="gpu service not configured")
+    return {"status": "ready"}
 
 
 @router.get("/dbz", summary="Database readiness probe")
@@ -68,14 +68,23 @@ def get_upload_url(
 
 
 @router.post("/projects", summary="Create a new project", status_code=status.HTTP_202_ACCEPTED)
-def create_project(
+async def create_project(
     project_id: str,
     filename: str,
     storage_key: str,
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
+    gpu_client: GpuClient = Depends(get_gpu_client),
+    storage: StorageService = Depends(get_storage_service),
+    file: UploadFile | None = File(None),
 ) -> Dict[str, str]:
-    """Create a project record and enqueue the processing task."""
+    """Create a project record and submit GPU job. Returns immediately with 202."""
+    # In local dev, a file may be uploaded directly to this endpoint.
+    # If so, we save it to the shared artifacts volume.
+    if get_settings().app_env == "development" and file:
+        contents = await file.read()
+        storage_key = storage.save_artifact(project_id, filename, contents)
+
     db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
     if not db_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -86,21 +95,20 @@ def create_project(
         artifact_type=ArtifactType.SOURCE_RAW,
         storage_key=storage_key,
     )
+    # Mark as processing immediately
+    project.status = ProjectStatus.PROCESSING
     session.add(project)
     session.add(artifact)
     session.commit()
     session.refresh(project)
 
-    async_result = celery_app.send_task(
-        "app.worker.tasks.process_page_task",
-        args=[str(project.id)],
-        kwargs={},
-    )
-    project.celery_task_id = async_result.id
-    session.add(project)
-    session.commit()
+    # Submit job to GPU service
+    try:
+        gpu_client.submit_job(job_id=str(project.id), storage_key=storage_key, mode="full")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"gpu submit failed: {exc}")
 
-    return {"project_id": str(project.id), "task_id": async_result.id}
+    return {"project_id": str(project.id)}
 
 
 @router.post("/projects/{project_id}/upload", summary="Upload a source file (local dev)")
@@ -137,13 +145,6 @@ def get_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     payload: Dict[str, Any] = {"project_id": str(project.id), "status": project.status}
-    if project.celery_task_id:
-        result = AsyncResult(project.celery_task_id, app=celery_app)
-        payload["task_state"] = result.state
-        if isinstance(result.info, dict):
-            payload["meta"] = {k: result.info.get(k) for k in ("stage", "progress")}
-        if result.failed():
-            payload["error"] = str(result.result)
 
     if project.status == "COMPLETED":
         artifacts = session.exec(select(ProjectArtifact).where(ProjectArtifact.project_id == project.id)).all()
@@ -162,7 +163,7 @@ def update_project(
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
-    """Update project editor data and enqueue a re-typeset task."""
+    """Update project editor data and synchronously re-typeset on CPU."""
     db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -179,12 +180,174 @@ def update_project(
     session.add(project)
     session.commit()
 
-    async_result = celery_app.send_task(
-        "app.worker.tasks.apply_edits_task",
-        args=[str(project.id)],
-        kwargs={},
-    )
-    return {"task_id": async_result.id}
+    # Run CPU re-typeset synchronously
+    job_dir = get_job_dir(project_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Download cleaned background image
+    cleaned_artifact = session.exec(
+        select(ProjectArtifact).where(
+            ProjectArtifact.project_id == project_id,
+            ProjectArtifact.artifact_type == ArtifactType.CLEANED_PAGE,
+        )
+    ).first()
+    if not cleaned_artifact:
+        cleaned_artifact = session.exec(
+            select(ProjectArtifact).where(
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == ArtifactType.FINAL_PNG,
+            )
+        ).first()
+    if not cleaned_artifact:
+        raise HTTPException(status_code=400, detail="No cleaned or final artifact found for re-typesetting")
+    storage_dep: StorageService = get_storage_service()
+    cleaned_path = job_dir / "cleaned.png"
+    with open(cleaned_path, "wb") as wf:
+        with storage_dep.get_artifact(cleaned_artifact.storage_key) as rf:
+            wf.write(rf.read())
+
+    # 2) Reconstruct text.json from editor_data.bubbles
+    bubbles = project.editor_data.get("bubbles") if isinstance(project.editor_data, dict) else None
+    if not bubbles or not isinstance(bubbles, list):
+        raise HTTPException(status_code=400, detail="Editor data missing bubbles for re-typesetting")
+    json_path = job_dir / "text.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({"bubbles": bubbles}, f, ensure_ascii=False, indent=2)
+
+    # 3) Apply edits from request body
+    edits = [e.model_dump() for e in body.edits]
+    result = orchestrator_apply_edits(job_dir, edits)
+
+    # Upload updated artifacts
+    storage = get_storage_service()
+    for artifact_type, artifact_path in result.get("artifacts", {}).items():
+        with open(artifact_path, "rb") as f:
+            payload_bytes = f.read()
+        storage_key = storage.save_artifact(project_id, Path(artifact_path).name, payload_bytes)
+        existing_artifact = session.exec(
+            select(ProjectArtifact).where(
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == ArtifactType(artifact_type),
+            )
+        ).first()
+        if existing_artifact:
+            existing_artifact.storage_key = storage_key
+            session.add(existing_artifact)
+        else:
+            new_artifact = ProjectArtifact(
+                project_id=project_id,
+                artifact_type=ArtifactType(artifact_type),
+                storage_key=storage_key,
+            )
+            session.add(new_artifact)
+    session.commit()
+    return {"status": "ok"}
+
+
+def _verify_gpu_webhook_signature(raw: bytes, header_sig: str | None) -> None:
+    settings = get_settings()
+    secret = settings.gpu_callback_secret
+    if not secret:
+        return
+    if not header_sig:
+        raise HTTPException(status_code=401, detail="missing signature")
+    mac = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).digest()
+    expected = base64.b64encode(mac).decode("ascii")
+    if not hmac.compare_digest(expected, header_sig):
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+
+@router.post("/gpu/callback", summary="GPU job completion webhook")
+async def gpu_callback(request: Request, session: Session = Depends(get_db_session)) -> Dict[str, str]:
+    raw = await request.body()
+    _verify_gpu_webhook_signature(raw, request.headers.get("x-gpu-signature"))
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json")
+
+    job_id = payload.get("job_id")
+    status_val = payload.get("status")
+    if not job_id or status_val not in ("COMPLETED", "FAILED"):
+        raise HTTPException(status_code=400, detail="invalid payload")
+
+    project = session.get(Project, job_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    if status_val == "FAILED":
+        project.status = ProjectStatus.FAILED
+        project.failure_reason = payload.get("error")
+        session.add(project)
+        session.commit()
+        return {"status": "ok"}
+
+    # Ensure job_dir has cleaned.png and text.json (produced by GPU service under shared artifacts volume)
+    job_dir = get_job_dir(job_id)
+    cleaned_path = job_dir / "cleaned.png"
+    json_path = job_dir / "text.json"
+    if not cleaned_path.exists() or not json_path.exists():
+        raise HTTPException(status_code=400, detail="missing cleaned or text.json from GPU result")
+
+    # Translate on CPU (if ja_text exists and en_text missing), then initial CPU typeset
+    try:
+        from app.pipeline.utils.textio import read_text_json, save_text_records
+        from app.pipeline.translate.gemini import GeminiTranslator
+        import os
+        data = read_text_json(json_path)
+        bubbles = data.get("bubbles", [])
+        texts: list[str] = []
+        indices: list[int] = []
+        for i, rec in enumerate(bubbles):
+            ja = (rec.get("ja_text") or "").strip()
+            has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip() != ""
+            if ja and not has_en:
+                indices.append(i)
+                texts.append(ja)
+        if texts:
+            translator = GeminiTranslator(api_key=os.getenv("GOOGLE_API_KEY", ""))
+            en_list = translator.translate_batch(texts)
+            for idx, en in zip(indices, en_list):
+                bubbles[idx]["en_text"] = en
+            save_text_records(json_path, bubbles)
+    except Exception:
+        # Proceed without translation on failure; typesetter will fallback to ja_text
+        pass
+
+    # Initial CPU typeset (no edits yet)
+    result = orchestrator_apply_edits(job_dir, [])
+
+    # Upload artifacts and update DB
+    storage = get_storage_service()
+    for artifact_type, artifact_path in result.get("artifacts", {}).items():
+        with open(artifact_path, "rb") as f:
+            payload_bytes = f.read()
+        storage_key = storage.save_artifact(job_id, Path(artifact_path).name, payload_bytes)
+        existing = session.exec(
+            select(ProjectArtifact).where(
+                ProjectArtifact.project_id == project.id,
+                ProjectArtifact.artifact_type == ArtifactType(artifact_type),
+            )
+        ).first()
+        if existing:
+            existing.storage_key = storage_key
+            session.add(existing)
+        else:
+            session.add(ProjectArtifact(project_id=project.id, artifact_type=ArtifactType(artifact_type), storage_key=storage_key))
+
+    # Attach editor payload to project
+    editor_payload_path = job_dir / "editor_payload.json"
+    if editor_payload_path.exists():
+        try:
+            with open(editor_payload_path, "r", encoding="utf-8") as f:
+                project.editor_data = json.load(f)
+        except Exception:
+            project.editor_data = None
+
+    project.status = ProjectStatus.COMPLETED
+    session.add(project)
+    session.commit()
+    return {"status": "ok"}
 
 
 @router.get("/projects/{project_id}/download", summary="Download packaged artifacts (zip)")

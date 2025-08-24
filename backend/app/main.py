@@ -26,8 +26,6 @@ async def lifespan(app: FastAPI):  # noqa: D401 - FastAPI lifespan signature
         "app_start",
         extra={
             "env": settings.app_env,
-            "redis_configured": bool(settings.effective_broker_url),
-            "redis_url": settings.effective_broker_url,
         },
     )
     yield
@@ -41,7 +39,11 @@ def create_app() -> FastAPI:
     # CORS for local development and future frontend
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Phase 1: permissive; will restrict later
+        allow_origins=[
+            "http://localhost:5173",
+            "https://mangafuse.com",
+            "https://www.mangafuse.com",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -64,7 +64,7 @@ def run_segmentation(
     except ImportError as exc:
         raise RuntimeError(
             "Ultralytics (YOLOv8) is required for segmentation. "
-            "Install AI requirements: pip install -r backend/requirements-ai.txt"
+            "Install AI requirements: pip install -r backend/requirements-ai-gpu.txt"
         ) from exc
 
     if not seg_model_path.is_file():
@@ -84,12 +84,14 @@ def run_segmentation(
     imgsz = _round_to_multiple_of_32(max(img_h, img_w))
 
     # 2. Run Prediction (use Ultralytics' own NMS via iou)
+    # Force GPU usage (device=0). Fail fast if CUDA is not available.
     results = model.predict(
         source=image_bgr,
         imgsz=imgsz,
         retina_masks=False,  # less memory; we'll use polygons and rasterize when needed
         conf=conf_thresh,
         iou=nms_iou_thresh,
+        device=0,
         verbose=False,
     )
     if not results:

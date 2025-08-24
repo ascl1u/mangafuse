@@ -105,6 +105,28 @@ class Settings(BaseSettings):
         description="Override the default constructed R2 S3 endpoint URL",
     )
 
+    # GPU service configuration
+    gpu_service_base_url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("GPU_SERVICE_BASE_URL"),
+        description="Base URL for the external/local GPU service (e.g., http://localhost:5001)",
+    )
+    gpu_callback_secret: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("GPU_CALLBACK_SECRET"),
+        description="Shared secret for HMAC-signed callbacks from GPU service",
+    )
+    public_backend_base_url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("PUBLIC_BACKEND_BASE_URL"),
+        description="Publicly reachable base URL for backend callbacks (e.g., https://api.example.com)",
+    )
+    gpu_service_provider: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("GPU_SERVICE_PROVIDER"),
+        description="The provider of the GPU service, e.g. 'local' or 'modal'",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
