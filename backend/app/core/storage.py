@@ -37,6 +37,14 @@ class StorageService(ABC):
         """Retrieve an artifact as a file-like object."""
         pass
 
+    # Optional: presigned upload for pipeline outputs (cloud-only)
+    def get_output_upload_url(self, project_id: str, artifact_name: str) -> tuple[str, str] | None:  # pragma: no cover - default not implemented
+        """Return (storage_key, presigned_put_url) for uploading a pipeline output artifact.
+
+        Local storage may return None to indicate unsupported; callers should handle this by uploading via the backend.
+        """
+        return None
+
 
 class LocalStorageService(StorageService):
     """Storage service for local development, using the filesystem."""
@@ -139,6 +147,15 @@ class CloudStorageService(StorageService):
         # Read fully to return a simple in-memory file-like object
         payload: bytes = obj["Body"].read()
         return io.BytesIO(payload)
+
+    def get_output_upload_url(self, project_id: str, artifact_name: str) -> tuple[str, str]:
+        key = f"jobs/{project_id}/{artifact_name}"
+        url = self._s3.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={"Bucket": self._bucket, "Key": key},
+            ExpiresIn=self._presign_expiration,
+        )
+        return key, url
 
 
 @lru_cache(maxsize=1)

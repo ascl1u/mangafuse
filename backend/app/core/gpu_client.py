@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Dict, Tuple
 import hmac
 import hashlib
 import base64
@@ -17,7 +17,14 @@ logger = logging.getLogger(__name__)
 class GpuClient(Protocol):
     """Interface for submitting jobs to a GPU service."""
 
-    def submit_job(self, *, job_id: str, storage_key: str, mode: str = "full") -> None:
+    def submit_job(
+        self,
+        *,
+        job_id: str,
+        storage_key: str,
+        mode: str = "full",
+        outputs: Optional[Dict[str, Tuple[str, str]]] = None,
+    ) -> None:
         """Submit a job to the GPU service."""
         ...
 
@@ -36,7 +43,14 @@ class LocalGpuClient:
         mac = hmac.new(self._callback_secret.encode("utf-8"), payload, hashlib.sha256).digest()
         return base64.b64encode(mac).decode("ascii")
 
-    def submit_job(self, *, job_id: str, storage_key: str, mode: str = "full") -> None:
+    def submit_job(
+        self,
+        *,
+        job_id: str,
+        storage_key: str,
+        mode: str = "full",
+        outputs: Optional[Dict[str, Tuple[str, str]]] = None,
+    ) -> None:
         callback_url = f"{self._public_backend}/api/v1/gpu/callback"
         body = {
             "job_id": job_id,
@@ -44,6 +58,10 @@ class LocalGpuClient:
             "input": {"storage_key": storage_key},
             "callback_url": callback_url,
         }
+        if outputs:
+            body["outputs"] = {
+                name: {"storage_key": sk, "put_url": url} for name, (sk, url) in outputs.items()
+            }
         headers = {"content-type": "application/json"}
         payload = json.dumps(body).encode("utf-8")
         sig = self._sign(payload)

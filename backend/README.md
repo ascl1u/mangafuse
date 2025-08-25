@@ -1,10 +1,9 @@
 # MangaFuse Backend — Phase 1 (Backend, DB & Worker) Verification
 
-This guide documents how to set up, run, and verify the Phase 1 backend implementation on Windows (PowerShell). It covers the API service, Redis, Celery worker, and an end-to-end task flow.
+This guide documents how to set up, run, and verify the backend implementation on Windows (PowerShell). It covers the API service and an end-to-end job flow.
 
 ## Prerequisites
 - Python 3.11+
-- Docker Desktop (for Redis)
 - PostgreSQL (DB URL available, or run via Docker)
 - PowerShell
 
@@ -24,13 +23,7 @@ Create `backend/.env` with the following contents:
 APP_ENV=development
 LOG_LEVEL=info
 
-# Redis URL used for both Celery broker and result backend in Phase 1
-REDIS_URL=redis://127.0.0.1:6379/0
-
-# Celery task limit (seconds)
-CELERY_TASK_TIME_LIMIT=120
-
-# Phase 2 (local AI script) — set this for translation stage
+# Translation API key (Gemini)
 # GOOGLE_API_KEY=
 
 # Database URL (PostgreSQL)
@@ -41,16 +34,9 @@ DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/mangafuse
 ```
 Notes:
 - The app will automatically load `backend/.env` (see `app/core/config.py`).
-- You may also set `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`, but by default they inherit from `REDIS_URL`.
 
-## 3) Start Redis (Docker)
-```powershell
-docker run --name mangafuse-redis -p 6379:6379 -d redis:7-alpine
-```
-Verify Redis is running:
-```powershell
-docker ps | Select-String mangafuse-redis
-```
+## 3) (Removed) Redis and Celery
+Redis and Celery were removed in favor of a GPU inference service. See `plan.md` and `app/core/gpu_client.py`.
 
 ## 4) (Optional) Start PostgreSQL via Docker
 If you don't have a PostgreSQL instance already, you can run one locally:
@@ -74,16 +60,8 @@ uvicorn app.main:app --reload
 ```
 The server should be available at `http://127.0.0.1:8000` and docs at `http://127.0.0.1:8000/docs`.
 
-## 7) Start the Celery worker
-In another PowerShell window (keep the venv active):
-```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-celery -A app.worker.celery_app.celery_app worker --pool=solo --concurrency=1 --loglevel=INFO
-```
-Notes:
-- `--pool=solo` ensures compatibility on Windows.
-- Logs are JSON-formatted for readability and future ingest.
+## 7) GPU service
+Provision the GPU service separately (see repository Dockerfile and `app/gpu_service/main.py`). The backend submits jobs and receives a webhook callback upon completion.
 
 ## 8) Verify endpoints (liveness/readiness/hello/database)
 Use either the browser or PowerShell. Examples below use PowerShell.
@@ -100,11 +78,11 @@ irm http://127.0.0.1:8000/api/v1/healthz
 # Expected: { "status": "ok" }
 ```
 
-- Readiness (requires Redis)
+- Readiness
 ```powershell
 irm http://127.0.0.1:8000/api/v1/readyz
-# Expected: { "status": "ready" } when Redis is running and REDIS_URL is set
-# If Redis is down or misconfigured: HTTP 503
+# Expected: { "status": "ready" } when DB is reachable and GPU base URL is configured
+# If dependencies are down or misconfigured: HTTP 503
 ```
 
 - Database Readiness (requires DATABASE_URL and a reachable DB)
@@ -138,18 +116,9 @@ while ($true) {
   Start-Sleep -Seconds 1
 }
 
-# Apply edits (persist + re-typeset in background)
+# Apply edits (persist + re-typeset)
 $edits = @{ edits = @(@{ id = 1; en_text = 'Hello!'; font_size = 18 }) } | ConvertTo-Json
 $resp2 = iwr -UseBasicParsing -Method POST -ContentType 'application/json' -Body $edits "http://127.0.0.1:8000/api/v1/jobs/$taskId/edits"
-$editsTask = ($resp2.Content | ConvertFrom-Json).task_id
-
-# Poll edits task if desired
-while ($true) {
-  $r = irm "http://127.0.0.1:8000/api/v1/process/$editsTask"
-  $r
-  if ($r.state -eq 'SUCCESS' -or $r.state -eq 'FAILURE') { break }
-  Start-Sleep -Seconds 1
-}
 
 # Fetch export URLs
 irm "http://127.0.0.1:8000/api/v1/jobs/$taskId/exports"
@@ -158,39 +127,28 @@ irm "http://127.0.0.1:8000/api/v1/jobs/$taskId/exports"
 irm -OutFile "mangafuse_$taskId.zip" "http://127.0.0.1:8000/api/v1/jobs/$taskId/download"
 ```
 
-## Phase 1 Exit Criteria (Checklist)
+## Backend Checklist
 - API serves:
   - `GET /api/v1/` → Hello World
   - `GET /api/v1/healthz` → liveness
-  - `GET /api/v1/readyz` → readiness (200 when Redis reachable, 503 otherwise)
+  - `GET /api/v1/readyz` → readiness (200 when DB reachable and GPU base URL configured)
   - `GET /api/v1/dbz` → database readiness (200 when DB reachable, 503 otherwise)
-- `POST /api/v1/process` → enqueues Celery job from an uploaded image, returns `{ task_id }`
-- `POST /api/v1/jobs/{task_id}/edits` → persists edits and enqueues re-typeset
-- `GET /api/v1/jobs/{task_id}/exports` → returns artifact URLs (final image, text layer)
-  - `GET /api/v1/process/{task_id}` → polls task state/result
-- Celery worker processes jobs and returns results.
-- Redis runs locally via Docker.
+- Job flow uses GPU service submission and webhook callback; CPU backend performs translation + typesetting.
 - Database is provisioned and reachable; Alembic migrations have been applied.
 - Configuration via `.env` is documented (this file).
 
-If all the above pass, Phase 1 is complete and you can proceed to Phase 2 in `../roadmap.md`.
-
 ## Troubleshooting
 - Readiness returns 503:
-  - Ensure Redis is running (`docker ps`).
-  - Confirm `REDIS_URL` is set in `backend/.env`.
-- Celery connects to wrong broker:
-  - Ensure `.env` is loaded and `REDIS_URL` is correct.
-  - Worker start logs include the broker/backend in JSON; verify values.
-- Windows worker issues:
-  - Use `--pool=solo --concurrency=1` as shown above.
+  - Ensure the database is reachable and GPU base URL is set.
+- Windows issues:
+  - Ensure `uvicorn` is started as described; consult logs for errors.
 
 ## Clean up
 ```powershell
-docker stop mangafuse-redis
-docker rm mangafuse-redis
+# If you used Dockerized Postgres
+docker stop mangafuse-postgres
+docker rm mangafuse-postgres
 ```
-
 
 ## Phase 2 Step 2.0 — Local AI Setup (no code execution here)
 

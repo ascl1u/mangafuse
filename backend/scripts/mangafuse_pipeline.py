@@ -96,22 +96,35 @@ def run_segmentation_stage(config: PipelineConfig, image_bgr: np.ndarray) -> Dic
     from app.pipeline.utils.visualization import make_overlay
 
     print("--- Running Stage: Segmentation ---")
-    
+
     print(f"Running bubble segmentation on {config.image_path.name}...")
     result = run_segmentation(image_bgr=image_bgr, seg_model_path=config.seg_model_path)
-    
-    bubbles = [{"id": i, "polygon": p} for i, p in enumerate(result.get("polygons", []), 1)]
+
+    polygons = result.get("polygons", [])
+    bubbles = [{"id": i, "polygon": p} for i, p in enumerate(polygons, 1)]
     result["bubbles"] = bubbles
-    
+
     if config.debug:
         print("Debug mode: Saving segmentation artifacts to disk...")
         h, w = image_bgr.shape[:2]
-        save_masks(config.masks_dir, result.get("masks", []), config.combined_mask_path, image_height=h, image_width=w)
-        save_text_records(config.json_path, bubbles)
-        overlay_bgr = make_overlay(image_bgr, result.get("masks", []), result.get("polygons", []), result.get("confidences", []))
-        save_png(config.overlay_path, overlay_bgr)
+        
+        rasterized_masks: List[np.ndarray] = []
+        for poly in polygons:
+            mask = np.zeros((h, w), dtype=np.uint8)
+            if poly:
+                pts = np.array(poly, dtype=np.int32)
+                cv2.fillPoly(mask, [pts], 255)
+            rasterized_masks.append(mask)
 
-    print(f"Segmentation complete. Found {len(result.get('polygons', []))} bubbles.")
+        save_masks(config.masks_dir, rasterized_masks, config.combined_mask_path, image_height=h, image_width=w)
+        
+        overlay_bgr = make_overlay(image_bgr, rasterized_masks, polygons, result.get("confidences", []))
+        save_png(config.overlay_path, overlay_bgr)
+        
+        save_text_records(config.json_path, bubbles)
+
+
+    print(f"Segmentation complete. Found {len(polygons)} bubbles.")
     return result
 
 def run_ocr_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -121,7 +134,7 @@ def run_ocr_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result: Dic
     from app.pipeline.ocr.engine import MangaOcrEngine
 
     print("--- Running Stage: OCR ---")
-    
+
     bubbles = seg_result.get("bubbles", [])
     masks = seg_result.get("masks", [])
     if not bubbles:
@@ -130,22 +143,22 @@ def run_ocr_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result: Dic
 
     ocr_engine = MangaOcrEngine()
     updated_count = 0
-    
+
     print(f"Performing OCR on {len(bubbles)} bubbles...")
     for i, rec in enumerate(bubbles):
         if not (rec.get("ja_text") is None or config.force):
             continue
-        
+
         mask_array = masks[i] if i < len(masks) else None
         polygon = rec.get("polygon", [])
-        
+
         crop_bgr, _ = tight_crop_from_mask(image_bgr, mask_array, polygon)
-        
+
         try:
             ja_text = ocr_engine.run(binarize_for_ocr(crop_bgr))
         except Exception:
             ja_text = ocr_engine.run(crop_bgr)
-            
+
         rec["ja_text"] = ja_text
         updated_count += 1
         print(f"   - Bubble {rec['id']}: {ja_text[:30]}...")
@@ -162,18 +175,18 @@ def run_translation_stage(config: PipelineConfig, bubbles: List[Dict[str, Any]])
     from app.pipeline.translate.gemini import GeminiTranslator
 
     print("--- Running Stage: Translation ---")
-    
+
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY environment variable not set.")
-    
+
     if not bubbles:
         print("No bubbles to translate.")
         return []
 
     texts_to_translate = []
     indices_to_update = []
-    
+
     for i, rec in enumerate(bubbles):
         ja_text = (rec.get("ja_text") or "").strip()
         if ja_text and (rec.get("en_text") is None or config.force):
@@ -183,7 +196,7 @@ def run_translation_stage(config: PipelineConfig, bubbles: List[Dict[str, Any]])
     if not texts_to_translate:
         print("Skipping translation: All bubbles already have English text. Use --force to re-translate.")
         return bubbles
-        
+
     print(f"Translating text for {len(texts_to_translate)} bubbles...")
     translator = GeminiTranslator(api_key=api_key)
     translated_texts = translator.translate_batch(texts_to_translate)
@@ -205,7 +218,7 @@ def run_inpaint_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result:
     from app.pipeline.inpaint.text_mask import build_text_inpaint_mask
 
     print("--- Running Stage: Inpainting ---")
-    
+
     if not config.force and config.cleaned_path.exists():
         print(f"Skipping inpainting: {config.cleaned_path.name} already exists. Use --force to override.")
         return read_image_bgr(config.cleaned_path)
@@ -213,10 +226,10 @@ def run_inpaint_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result:
     print("Building precise text mask for inpainting...")
     text_mask = build_text_inpaint_mask(
         image_bgr=image_bgr,
-        instance_masks=seg_result.get("masks", []),  # may be empty after polygon-only segmentation
+        instance_masks=seg_result.get("masks", []),
         bubbles=bubble_data
     )
-    
+
     if config.debug:
         print(f"Debug mode: Saving text inpaint mask to {config.text_mask_path}")
         save_png(config.text_mask_path, text_mask)
@@ -228,12 +241,12 @@ def run_inpaint_stage(config: PipelineConfig, image_bgr: np.ndarray, seg_result:
         if masks:
             combined_mask = np.maximum.reduce(masks).astype(np.uint8) * 255
             use_mask = combined_mask
-    
+
     print(f"Running inpainting on {config.image_path.name}...")
     cleaned_bgr = run_inpainting(image_bgr, use_mask)
-    
+
     save_png(config.cleaned_path, cleaned_bgr)
-    
+
     print(f"Inpainting complete. Saved cleaned image to {config.cleaned_path}")
     return cleaned_bgr
 
@@ -260,8 +273,7 @@ def run_typeset_stage(config: PipelineConfig, cleaned_bgr: np.ndarray, bubble_da
 
     print(f"Typesetting text for {len(records)} bubbles...")
     debug_overlay_path = config.out_dir / f"{config.file_prefix}_typeset_debug.png" if config.debug else None
-    
-    # --- REFACTOR: Pass the in-memory NumPy array directly ---
+
     render_typeset(
         cleaned_image_bgr=cleaned_bgr,
         output_final_path=config.final_path,
@@ -284,64 +296,97 @@ def process_image(config: PipelineConfig):
     print(f"Output directory: '{config.out_dir}'")
     print(f"Stage(s) to run: '{config.stage}'")
 
-    # --- In-Memory State ---
     image_bgr = read_image_bgr(config.image_path)
     seg_result = {}
     bubble_data = []
     cleaned_bgr = None
+
+    if config.json_path.exists() and not config.force:
+        print(f"Loading existing bubble data from {config.json_path.name}")
+        raw_json_data = read_text_json(config.json_path)
+        parsed_data = None
+        
+        try:
+            parsed_data = json.loads(raw_json_data) if isinstance(raw_json_data, str) else raw_json_data
+        except (json.JSONDecodeError, TypeError):
+            print(f"Warning: Failed to parse JSON from {config.json_path.name}. Will re-run precursor stages.")
+
+        if parsed_data:
+            if isinstance(parsed_data, list):
+                bubble_data = parsed_data
+            elif isinstance(parsed_data, dict):
+                for key in ["bubbles", "records", "data"]:
+                    if isinstance(parsed_data.get(key), list):
+                        bubble_data = parsed_data[key]
+                        break
+            
+            if bubble_data:
+                if all(isinstance(b, dict) for b in bubble_data):
+                    polygons = [b.get("polygon", []) for b in bubble_data]
+                    seg_result = {"polygons": polygons, "bubbles": bubble_data, "masks": []}
+                else:
+                    print(f"Warning: Data from {config.json_path.name} is not a list of dictionaries. Discarding.")
+                    bubble_data = []
+            else:
+                print(f"Warning: Could not find a list of bubbles in {config.json_path.name}. Discarding loaded data.")
+        
+    if config.cleaned_path.exists() and not config.force:
+        print(f"Loading existing cleaned image from {config.cleaned_path.name}")
+        cleaned_bgr = read_image_bgr(config.cleaned_path)
     
     # --- Stage-based execution ---
-    # Order adjusted so that "inpaint" does not implicitly include translation.
-    # GPU service runs seg -> ocr -> inpaint. CPU-only stages (translate, typeset) follow.
+    # FIX: Corrected the order of stages to match the specified pipeline flow.
     stages_to_run = ["seg", "ocr", "inpaint", "translate", "typeset"]
     
-    # Determine the index of the final stage to run
     try:
         end_index = stages_to_run.index(config.stage) if config.stage != "all" else len(stages_to_run) - 1
     except ValueError:
         end_index = len(stages_to_run) - 1
 
-    # Define the sequence of stages to execute
     active_stages = stages_to_run[:end_index + 1]
 
-    # Run stages sequentially, passing data in memory
-    if "seg" in active_stages:
+    if "seg" in active_stages and not seg_result:
         seg_result = run_segmentation_stage(config, image_bgr)
-    
+        bubble_data = seg_result.get("bubbles", [])
+
     if "ocr" in active_stages:
-        if not seg_result:
-            seg_result = run_segmentation_stage(config, image_bgr)
-        bubble_data = run_ocr_stage(config, image_bgr, seg_result)
+        if not bubble_data or any(b.get("ja_text") is None for b in bubble_data):
+            if not seg_result:
+                print("Segmentation results not found. Running segmentation first...")
+                seg_result = run_segmentation_stage(config, image_bgr)
+            bubble_data = run_ocr_stage(config, image_bgr, seg_result)
+
+    if "inpaint" in active_stages and cleaned_bgr is None:
+        if not bubble_data:
+             print("Bubble data not found. Running segmentation and OCR first...")
+             if not seg_result: seg_result = run_segmentation_stage(config, image_bgr)
+             bubble_data = run_ocr_stage(config, image_bgr, seg_result)
+        cleaned_bgr = run_inpaint_stage(config, image_bgr, seg_result, bubble_data)
 
     if "translate" in active_stages:
-        if not bubble_data:
-            if not seg_result:
-                seg_result = run_segmentation_stage(config, image_bgr)
-            bubble_data = run_ocr_stage(config, image_bgr, seg_result)
-        bubble_data = run_translation_stage(config, bubble_data)
-
-    if "inpaint" in active_stages:
-        if not bubble_data:
-            if not seg_result:
-                seg_result = run_segmentation_stage(config, image_bgr)
-            bubble_data = run_ocr_stage(config, image_bgr, seg_result)
-        cleaned_bgr = run_inpaint_stage(config, image_bgr, seg_result, bubble_data)
+        if bubble_data and any((b.get("ja_text") or "").strip() and b.get("en_text") is None for b in bubble_data):
+            if any(b.get("ja_text") is None for b in bubble_data):
+                 print("OCR results are incomplete. Running OCR first...")
+                 if not seg_result: seg_result = run_segmentation_stage(config, image_bgr)
+                 bubble_data = run_ocr_stage(config, image_bgr, seg_result)
+            bubble_data = run_translation_stage(config, bubble_data)
+        elif not bubble_data and "translate" == config.stage:
+            print("Bubble data not found. Run 'seg' and 'ocr' stages before 'translate'.")
     
     if "typeset" in active_stages:
         if cleaned_bgr is None:
+            print("Cleaned image not found. Running inpainting stage first...")
             if not bubble_data:
-                if not seg_result:
-                    seg_result = run_segmentation_stage(config, image_bgr)
+                if not seg_result: seg_result = run_segmentation_stage(config, image_bgr)
                 bubble_data = run_ocr_stage(config, image_bgr, seg_result)
-            # Typesetting requires translated text if not using placeholders
-            if not config.use_placeholder_text and not any("en_text" in b for b in bubble_data):
-                 bubble_data = run_translation_stage(config, bubble_data)
             cleaned_bgr = run_inpaint_stage(config, image_bgr, seg_result, bubble_data)
-        
-        if config.debug or not bubble_data:
-             save_text_records(config.json_path, bubble_data)
 
+        if not config.use_placeholder_text and not any("en_text" in b for b in bubble_data if (b.get("ja_text") or "").strip()):
+            print("Translated text not found. Running translation stage first...")
+            bubble_data = run_translation_stage(config, bubble_data)
+            
         run_typeset_stage(config, cleaned_bgr, bubble_data)
+
 
 # --- Main Orchestrator ---
 
@@ -359,7 +404,6 @@ def main():
     if not input_path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
     
-    # --- Collect all image paths to process ---
     image_paths = []
     if input_path.is_file():
         image_paths.append(input_path)
@@ -376,7 +420,6 @@ def main():
     total_images = len(image_paths)
     print(f"Found {total_images} image(s) to process.")
 
-    # --- Process each image in a loop ---
     for i, image_path in enumerate(image_paths):
         image_start_time = time.time()
         print(f"\n{'='*80}")

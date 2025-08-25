@@ -33,9 +33,11 @@ def _parse_yolo_results(result: Any) -> Dict[str, List]:
     if hasattr(result, "boxes") and getattr(result.boxes, "conf", None) is not None:
         confidences = [float(c) for c in result.boxes.conf.cpu().numpy()]
 
+    # Polygons-only: avoid materializing full-resolution masks to reduce memory.
+    masks = []
     n = min(len(polygons), len(confidences))
     return {
-        "masks": [],  # no mask arrays; consumers should rasterize polygons on demand
+        "masks": [],
         "polygons": polygons[:n],
         "confidences": confidences[:n],
     }

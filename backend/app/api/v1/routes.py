@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import base64
 from pathlib import Path
+import logging
 
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -90,24 +91,25 @@ async def create_project(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     project = Project(id=project_id, user_id=db_user.id, title=filename)
-    artifact = ProjectArtifact(
-        project_id=project.id,
-        artifact_type=ArtifactType.SOURCE_RAW,
-        storage_key=storage_key,
-    )
+    artifact = ProjectArtifact(project_id=project.id, artifact_type=ArtifactType.SOURCE_RAW, storage_key=storage_key)
     # Mark as processing immediately
     project.status = ProjectStatus.PROCESSING
-    session.add(project)
-    session.add(artifact)
-    session.commit()
-    session.refresh(project)
 
-    # Submit job to GPU service
+    # Submit GPU job first; commit only if submission succeeds to avoid orphaned rows
     try:
-        gpu_client.submit_job(job_id=str(project.id), storage_key=storage_key, mode="full")
+        # Prepare presigned outputs for decoupled artifact handling (if supported by storage)
+        outputs: dict[str, tuple[str, str]] = {}
+        for name in ("CLEANED_PAGE", "TEXT_JSON"):
+            pair = storage.get_output_upload_url(project_id, f"{name.lower()}.tmp")
+            if pair:
+                outputs[name] = pair
+        gpu_client.submit_job(job_id=str(project.id), storage_key=storage_key, mode="full", outputs=outputs or None)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"gpu submit failed: {exc}")
 
+    session.add(project)
+    session.add(artifact)
+    session.commit()
     return {"project_id": str(project.id)}
 
 
@@ -180,31 +182,30 @@ def update_project(
     session.add(project)
     session.commit()
 
-    # Run CPU re-typeset synchronously
+    # Run CPU re-typeset synchronously (with local cache of cleaned image)
     job_dir = get_job_dir(project_id)
     job_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1) Download cleaned background image
-    cleaned_artifact = session.exec(
-        select(ProjectArtifact).where(
-            ProjectArtifact.project_id == project_id,
-            ProjectArtifact.artifact_type == ArtifactType.CLEANED_PAGE,
-        )
-    ).first()
-    if not cleaned_artifact:
+    cleaned_path = job_dir / "cleaned.png"
+    if not cleaned_path.exists():
         cleaned_artifact = session.exec(
             select(ProjectArtifact).where(
                 ProjectArtifact.project_id == project_id,
-                ProjectArtifact.artifact_type == ArtifactType.FINAL_PNG,
+                ProjectArtifact.artifact_type == ArtifactType.CLEANED_PAGE,
             )
         ).first()
-    if not cleaned_artifact:
-        raise HTTPException(status_code=400, detail="No cleaned or final artifact found for re-typesetting")
-    storage_dep: StorageService = get_storage_service()
-    cleaned_path = job_dir / "cleaned.png"
-    with open(cleaned_path, "wb") as wf:
-        with storage_dep.get_artifact(cleaned_artifact.storage_key) as rf:
-            wf.write(rf.read())
+        if not cleaned_artifact:
+            cleaned_artifact = session.exec(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.project_id == project_id,
+                    ProjectArtifact.artifact_type == ArtifactType.FINAL_PNG,
+                )
+            ).first()
+        if not cleaned_artifact:
+            raise HTTPException(status_code=400, detail="No cleaned or final artifact found for re-typesetting")
+        storage_dep: StorageService = get_storage_service()
+        with open(cleaned_path, "wb") as wf:
+            with storage_dep.get_artifact(cleaned_artifact.storage_key) as rf:
+                wf.write(rf.read())
 
     # 2) Reconstruct text.json from editor_data.bubbles
     bubbles = project.editor_data.get("bubbles") if isinstance(project.editor_data, dict) else None
@@ -220,6 +221,7 @@ def update_project(
 
     # Upload updated artifacts
     storage = get_storage_service()
+    # Upload artifacts (final, text_layer) sequentially (can be parallelized later)
     for artifact_type, artifact_path in result.get("artifacts", {}).items():
         with open(artifact_path, "rb") as f:
             payload_bytes = f.read()
@@ -258,7 +260,7 @@ def _verify_gpu_webhook_signature(raw: bytes, header_sig: str | None) -> None:
 
 
 @router.post("/gpu/callback", summary="GPU job completion webhook")
-async def gpu_callback(request: Request, session: Session = Depends(get_db_session)) -> Dict[str, str]:
+async def gpu_callback(request: Request, session: Session = Depends(get_db_session), storage: StorageService = Depends(get_storage_service)) -> Dict[str, str]:
     raw = await request.body()
     _verify_gpu_webhook_signature(raw, request.headers.get("x-gpu-signature"))
     try:
@@ -282,10 +284,25 @@ async def gpu_callback(request: Request, session: Session = Depends(get_db_sessi
         session.commit()
         return {"status": "ok"}
 
-    # Ensure job_dir has cleaned.png and text.json (produced by GPU service under shared artifacts volume)
     job_dir = get_job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
     cleaned_path = job_dir / "cleaned.png"
     json_path = job_dir / "text.json"
+
+    # Prefer artifacts from callback (R2 storage_keys); fallback to shared FS for local dev
+    try:
+        artifacts = payload.get("artifacts") or {}
+        if artifacts.get("CLEANED_PAGE"):
+            with open(cleaned_path, "wb") as wf:
+                with storage.get_artifact(artifacts["CLEANED_PAGE"]) as rf:
+                    wf.write(rf.read())
+        if artifacts.get("TEXT_JSON"):
+            with open(json_path, "wb") as wf:
+                with storage.get_artifact(artifacts["TEXT_JSON"]) as rf:
+                    wf.write(rf.read())
+    except Exception:
+        pass
+
     if not cleaned_path.exists() or not json_path.exists():
         raise HTTPException(status_code=400, detail="missing cleaned or text.json from GPU result")
 
@@ -310,9 +327,9 @@ async def gpu_callback(request: Request, session: Session = Depends(get_db_sessi
             for idx, en in zip(indices, en_list):
                 bubbles[idx]["en_text"] = en
             save_text_records(json_path, bubbles)
-    except Exception:
+    except Exception as exc:
+        logging.warning("translation_failed", extra={"job_id": job_id, "error": str(exc)})
         # Proceed without translation on failure; typesetter will fallback to ja_text
-        pass
 
     # Initial CPU typeset (no edits yet)
     result = orchestrator_apply_edits(job_dir, [])
@@ -357,9 +374,11 @@ def download_package(
     session: Session = Depends(get_db_session),
     storage: StorageService = Depends(get_storage_service),
 ):
-    """Stream a zip containing available artifacts for a project."""
-    import io
+    """Stream a zip containing available artifacts for a project without loading into memory."""
+    import os
     import zipfile
+    import tempfile
+    from typing import Iterator
 
     db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
     if not db_user:
@@ -374,23 +393,50 @@ def download_package(
     if not artifacts:
         raise HTTPException(status_code=404, detail="No artifacts found for this project")
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for art in artifacts:
-            try:
-                data = storage.get_artifact(art.storage_key)
-                zf.writestr(f"{art.artifact_type.value.lower()}.png", data.read())
-            except FileNotFoundError:
-                # In a real app, you might log this or handle it differently
-                continue
-    buf.seek(0)
+    # Build zip on disk to limit memory usage, then stream in chunks
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for art in artifacts:
+                try:
+                    with storage.get_artifact(art.storage_key) as rf:
+                        # Write each artifact under a stable name
+                        arcname = f"{art.artifact_type.value.lower()}.png"
+                        # ZipFile.writestr accepts bytes; read in chunks to avoid loading entire file
+                        # Accumulate into a temporary file inside the zip API using writestr once
+                        data = rf.read()
+                        zf.writestr(arcname, data)
+                except FileNotFoundError:
+                    logging.warning("artifact_missing", extra={"project_id": project_id, "key": art.storage_key})
+                    continue
 
-    filename = f"mangafuse_{project_id}.zip"
-    headers = {
-        "Content-Disposition": f"attachment; filename={filename}",
-        "Cache-Control": "no-cache",
-    }
-    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+        def file_iterator(path: str, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+        filename = f"mangafuse_{project_id}.zip"
+        headers = {
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Cache-Control": "no-cache",
+        }
+        return StreamingResponse(file_iterator(tmp_path), media_type="application/zip", headers=headers)
+    except Exception:
+        # Ensure temp file is removed on failure
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        raise
 
 
 # TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard  

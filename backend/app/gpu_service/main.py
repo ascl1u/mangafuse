@@ -22,6 +22,7 @@ class SubmitJobBody(BaseModel):
     mode: str = "full"  # "cleaned" | "full"
     input: JobInput
     callback_url: Optional[str] = None
+    outputs: Optional[Dict[str, Dict[str, str]]] = None  # name -> {storage_key, put_url}
 
 
 app = FastAPI(title="MangaFuse GPU Service", version="0.1.0")
@@ -63,13 +64,31 @@ def _run_pipeline_and_callback(body: SubmitJobBody) -> None:
         _write_bytes(dst_path, _read_bytes(src_path))
 
         # Run pipeline without translate or typeset; produce cleaned + text.json (+ optional overlay)
-        run_pipeline(
+        result = run_pipeline(
             job_id=job_id,
             image_path=str(dst_path),
             depth=mode,
             include_typeset=False,
             include_translate=False,
         )
+
+        # If outputs with presigned PUTs were provided, upload via HTTP PUT and then remove local files
+        if body.outputs:
+            import httpx
+            artifacts = result.get("artifacts", {})
+            name_to_path = {
+                "CLEANED_PAGE": artifacts.get("CLEANED_PAGE"),
+                "TEXT_JSON": result.get("paths", {}).get("json"),
+            }
+            with httpx.Client(timeout=30.0) as client:
+                for name, spec in body.outputs.items():
+                    p = name_to_path.get(name)
+                    if not p or not Path(p).exists():
+                        continue
+                    with open(p, "rb") as f:
+                        url = spec.get("put_url", "")
+                        if url:
+                            client.put(url, content=f.read())
     except Exception as e:
         status = "FAILED"
         error_detail = str(e)
@@ -82,6 +101,8 @@ def _run_pipeline_and_callback(body: SubmitJobBody) -> None:
             import httpx
 
             payload = {"job_id": job_id, "status": status}
+            if status == "COMPLETED" and body.outputs:
+                payload["artifacts"] = {name: spec.get("storage_key") for name, spec in body.outputs.items() if spec.get("storage_key")}
             if error_detail:
                 payload["error"] = error_detail
             with httpx.Client(timeout=10.0) as client:

@@ -101,11 +101,20 @@ def run_pipeline(
     if force or not (overlay_path.exists() and combined_mask_path.exists() and json_path.exists()):
         result = run_segmentation(image_bgr=image_bgr, seg_model_path=seg_model)
         polygons = result.get("polygons", [])
-        instance_masks = result.get("masks", [])
         confidences = result.get("confidences", [])
-        overlay_bgr = make_overlay(image_bgr, instance_masks, polygons, confidences)
+        # For overlay: rasterize polygons into temporary masks for visualization only
+        temp_masks: List[np.ndarray] = []
+        for poly in polygons:
+            m = np.zeros((height, width), dtype=np.uint8)
+            if poly:
+                pts = np.array(poly, dtype=np.int32)
+                cv2.fillPoly(m, [pts], 1)
+            temp_masks.append(m)
+        overlay_bgr = make_overlay(image_bgr, temp_masks, polygons, confidences)
         save_png(overlay_path, overlay_bgr)
-        save_masks(masks_dir, instance_masks, combined_mask_path, image_height=height, image_width=width)
+        # Persist masks for downstream consumers by rasterizing polygons once
+        from app.pipeline.utils.masks import save_masks
+        save_masks(masks_dir, temp_masks, combined_mask_path, image_height=height, image_width=width)
         write_text_json(json_path, polygons)
         if debug:
             dbg = overlay_bgr.copy()
@@ -133,8 +142,11 @@ def run_pipeline(
                 continue
             bubble_id = int(rec.get("id"))
             polygon = rec.get("polygon") or []
-            mask_path = masks_dir / f"{bubble_id}.png"
-            mask_gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            # Polygons-only: rasterize polygon to mask for tight crop
+            mask_gray = np.zeros((height, width), dtype=np.uint8)
+            if polygon:
+                pts = np.array(polygon, dtype=np.int32)
+                cv2.fillPoly(mask_gray, [pts], 1)
             crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_gray, polygon)
             try:
                 bin_img = binarize_for_ocr(crop_bgr)
@@ -162,8 +174,11 @@ def run_pipeline(
                 if not isinstance(rec.get("ja_text"), str) or rec["ja_text"].strip() == "":
                     bubble_id = int(rec.get("id"))
                     polygon = rec.get("polygon") or []
-                    mask_path = masks_dir / f"{bubble_id}.png"
-                    mask_gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    # Polygons-only: rasterize polygon to mask for tight crop
+                    mask_gray = np.zeros((height, width), dtype=np.uint8)
+                    if polygon:
+                        pts = np.array(polygon, dtype=np.int32)
+                        cv2.fillPoly(mask_gray, [pts], 1)
                     crop_bgr, _bbox = tight_crop_from_mask(image_bgr, mask_gray, polygon)
                     try:
                         rec["ja_text"] = ocr_engine.run(binarize_for_ocr(crop_bgr))
@@ -194,32 +209,19 @@ def run_pipeline(
             data = read_text_json(json_path)
             bubbles_for_mask = data.get("bubbles", [])
             # Use in-memory masks if available from the segmentation stage; otherwise, load from disk
-            if 'instance_masks' in locals() and isinstance(instance_masks, list) and instance_masks:
-                # Ensure masks are single-channel uint8 (0/255)
-                imasks = [
-                    (m.astype(np.uint8) if m.dtype != np.uint8 else m)
-                    for m in instance_masks
-                ]
-            else:
-                imasks = []
-                for rec in bubbles_for_mask:
-                    try:
-                        bubble_id = int(rec.get("id"))
-                    except Exception:
-                        bubble_id = None
-                    if bubble_id is None:
-                        # maintain index alignment with a blank mask
-                        imasks.append(np.zeros((height, width), dtype=np.uint8))
-                        continue
-                    mpath = masks_dir / f"{bubble_id}.png"
-                    m = cv2.imread(str(mpath), cv2.IMREAD_GRAYSCALE)
-                    if m is None:
-                        m = np.zeros((height, width), dtype=np.uint8)
-                    elif m.ndim == 3 and m.shape[2] == 3:
-                        m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
-                    elif m.ndim == 3 and m.shape[2] == 4:
-                        m = cv2.cvtColor(m, cv2.COLOR_BGRA2GRAY)
-                    imasks.append(m)
+            # Build masks by rasterizing polygons from bubbles (polygons-only pipeline)
+            imasks = []
+            for rec in bubbles_for_mask:
+                try:
+                    bubble_id = int(rec.get("id"))
+                except Exception:
+                    bubble_id = None
+                poly = rec.get("polygon") or []
+                m = np.zeros((height, width), dtype=np.uint8)
+                if poly:
+                    pts = np.array(poly, dtype=np.int32)
+                    cv2.fillPoly(m, [pts], 1)
+                imasks.append(m)
             text_mask = build_text_inpaint_mask(image_bgr, imasks, bubbles_for_mask)
             save_png(text_mask_path, cv2.cvtColor(text_mask, cv2.COLOR_GRAY2BGR))
         # Choose mask: text_mask if non-empty else combined
@@ -299,34 +301,27 @@ def run_pipeline(
         stage_completed.append("typeset")
         _update("typeset_complete", 1.0)
 
-    # Build result payload
+    # Build result payload (file paths only; URL generation belongs to API layer)
     num_bubbles = len(bubbles)
-    # Provide a minimal editor payload by default; will be overwritten below if we can build a richer one
-    default_image_url = (
-        f"/artifacts/jobs/{job_id}/cleaned.png" if cleaned_path.exists() else (
-            f"/artifacts/jobs/{job_id}/final.png" if final_path.exists() else f"/artifacts/jobs/{job_id}/segmentation_overlay.png"
-        )
-    )
     result: Dict[str, Any] = {
         "stage_completed": stage_completed,
         "width": int(width),
         "height": int(height),
         "num_bubbles": int(num_bubbles),
-        "json_url": f"/artifacts/jobs/{job_id}/text.json",
-        "overlay_url": f"/artifacts/jobs/{job_id}/segmentation_overlay.png",
+        "paths": {
+            "json": str(json_path),
+            "overlay": str(overlay_path),
+            "cleaned": str(cleaned_path) if cleaned_path.exists() else None,
+            "final": str(final_path) if final_path.exists() else None,
+            "typeset_debug": str(typeset_debug_path) if (debug and typeset_debug_path.exists()) else None,
+        },
         "editor_payload": {
-            "image_url": default_image_url,
+            "image_path": str(cleaned_path if cleaned_path.exists() else (final_path if final_path.exists() else overlay_path)),
             "width": int(width),
             "height": int(height),
             "bubbles": [],
         },
     }
-    if cleaned_path.exists():
-        result["cleaned_url"] = f"/artifacts/jobs/{job_id}/cleaned.png"
-    if final_path.exists():
-        result["final_url"] = f"/artifacts/jobs/{job_id}/final.png"
-    if debug and typeset_debug_path.exists():
-        result["typeset_debug_url"] = f"/artifacts/jobs/{job_id}/typeset_debug.png"
 
     # Provide artifact paths for worker upload
     artifacts: Dict[str, str] = {}
@@ -377,7 +372,7 @@ def run_pipeline(
         else:
             image_url = f"/artifacts/jobs/{job_id}/segmentation_overlay.png"
         editor_payload = {
-            "image_url": image_url,
+            "image_path": str(cleaned_path if cleaned_path.exists() else (final_path if final_path.exists() else overlay_path)),
             "width": int(width),
             "height": int(height),
             "bubbles": normalized,
