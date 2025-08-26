@@ -13,14 +13,20 @@ class Settings(BaseSettings):
     Uses a local .env file in development for convenience.
     """
 
-    app_env: Literal["development", "production"] = "development"
-    log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
+    app_env: Literal["development", "production"] = Field(
+        default="development",
+        validation_alias=AliasChoices("APP_ENV")
+    )
+    log_level: Literal["debug", "info", "warning", "error", "critical"] = Field(
+        default="warning",
+        validation_alias=AliasChoices("LOG_LEVEL")
+    )
 
-    # Redis and future Celery configuration
-    redis_url: Optional[str] = None
-    celery_broker_url: Optional[str] = None
-    celery_result_backend: Optional[str] = None
-    celery_task_time_limit: int = 120
+    # Redis / RQ configuration
+    redis_url: Optional[str] = Field(default=None, validation_alias=AliasChoices("REDIS_URL"))
+    rq_queue_default: str = Field(default="cpu-default", validation_alias=AliasChoices("RQ_QUEUE_DEFAULT"))
+    rq_queue_high: str = Field(default="cpu-high", validation_alias=AliasChoices("RQ_QUEUE_HIGH"))
+    rq_job_timeout_seconds: int = Field(default=120, validation_alias=AliasChoices("RQ_JOB_TIMEOUT_SECONDS"))
     google_api_key: Optional[str] = None
 
     # Database configuration
@@ -135,11 +141,7 @@ class Settings(BaseSettings):
 
     @property
     def effective_broker_url(self) -> Optional[str]:
-        return self.celery_broker_url or self.redis_url
-
-    @property
-    def effective_result_backend(self) -> Optional[str]:
-        return self.celery_result_backend or self.redis_url
+        return self.redis_url
 
     @property
     def r2_endpoint_url(self) -> Optional[str]:

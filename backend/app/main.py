@@ -18,6 +18,8 @@ async def lifespan(app: FastAPI):  # noqa: D401 - FastAPI lifespan signature
     settings = get_settings()
     configure_logging(settings.log_level)
 
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
     engine, sessionmaker = create_engine_and_sessionmaker()
     app.state.db_engine = engine
     app.state.db_sessionmaker = sessionmaker

@@ -13,6 +13,8 @@ from sqlmodel import Field, SQLModel
 class ProjectStatus(str, Enum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
+    TRANSLATING = "TRANSLATING"
+    UPDATING = "UPDATING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
@@ -68,6 +70,7 @@ class Project(SQLModel, table=True):
         default=ProjectStatus.PENDING,
     )
     editor_data: Optional[dict] = Field(default=None, sa_column=sa.Column(JSONB, nullable=True))
+    editor_data_rev: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
     celery_task_id: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(length=191), nullable=True))
     failure_reason: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
     created_at: datetime = Field(

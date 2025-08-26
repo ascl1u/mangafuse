@@ -22,6 +22,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.core.storage import get_storage_service, StorageService
 from app.core.paths import get_job_dir
 from app.pipeline.orchestrator import apply_edits as orchestrator_apply_edits
+from app.worker.queue import get_default_queue, get_high_priority_queue
+from app.worker.tasks import translate_and_typeset, retypeset_after_edits
 from app.core.gpu_client import GpuClient, get_gpu_client
 
 
@@ -148,7 +150,7 @@ def get_project(
 
     payload: Dict[str, Any] = {"project_id": str(project.id), "status": project.status}
 
-    if project.status == "COMPLETED":
+    if project.status == ProjectStatus.COMPLETED:
         artifacts = session.exec(select(ProjectArtifact).where(ProjectArtifact.project_id == project.id)).all()
         payload["artifacts"] = {
             art.artifact_type.value: storage.get_download_url(art.storage_key) for art in artifacts
@@ -165,7 +167,7 @@ def update_project(
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
-    """Update project editor data and synchronously re-typeset on CPU."""
+    """Update project editor data and enqueue re-typeset job (asynchronous)."""
     db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -175,75 +177,37 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Update editor_data (simplified for now)
-    if not project.editor_data:
-        project.editor_data = {}
-    project.editor_data["edits"] = [e.model_dump() for e in body.edits]
+    # Update editor_data and increment revision
+    existing_editor: Dict[str, Any] = project.editor_data if isinstance(project.editor_data, dict) else {}
+    # Reassign entire JSON to ensure SQLAlchemy persists JSONB changes (avoid in-place mutation)
+    new_editor = dict(existing_editor)
+    new_editor["edits"] = [e.model_dump() for e in body.edits]
+    project.editor_data = new_editor
+    project.editor_data_rev = int(project.editor_data_rev or 0) + 1
+    project.status = ProjectStatus.UPDATING
     session.add(project)
     session.commit()
 
-    # Run CPU re-typeset synchronously (with local cache of cleaned image)
-    job_dir = get_job_dir(project_id)
-    job_dir.mkdir(parents=True, exist_ok=True)
-    cleaned_path = job_dir / "cleaned.png"
-    if not cleaned_path.exists():
-        cleaned_artifact = session.exec(
-            select(ProjectArtifact).where(
-                ProjectArtifact.project_id == project_id,
-                ProjectArtifact.artifact_type == ArtifactType.CLEANED_PAGE,
-            )
-        ).first()
-        if not cleaned_artifact:
-            cleaned_artifact = session.exec(
-                select(ProjectArtifact).where(
-                    ProjectArtifact.project_id == project_id,
-                    ProjectArtifact.artifact_type == ArtifactType.FINAL_PNG,
-                )
-            ).first()
-        if not cleaned_artifact:
-            raise HTTPException(status_code=400, detail="No cleaned or final artifact found for re-typesetting")
-        storage_dep: StorageService = get_storage_service()
-        with open(cleaned_path, "wb") as wf:
-            with storage_dep.get_artifact(cleaned_artifact.storage_key) as rf:
-                wf.write(rf.read())
+    # Enqueue high-priority re-typeset job with revision for stale-job skipping
+    try:
+        q = get_high_priority_queue()
+        job_id = f"retypeset-{project_id}-{project.editor_data_rev}"
+        q.enqueue(
+            retypeset_after_edits,
+            project_id,
+            project.editor_data_rev,
+            job_id=job_id,
+            at_front=True,
+        )
+    except Exception as exc:
+        # Rollback state to avoid leaving in UPDATING forever
+        project.status = ProjectStatus.FAILED
+        project.failure_reason = f"enqueue_failed: {exc}"
+        session.add(project)
+        session.commit()
+        raise HTTPException(status_code=503, detail="Queue unavailable")
 
-    # 2) Reconstruct text.json from editor_data.bubbles
-    bubbles = project.editor_data.get("bubbles") if isinstance(project.editor_data, dict) else None
-    if not bubbles or not isinstance(bubbles, list):
-        raise HTTPException(status_code=400, detail="Editor data missing bubbles for re-typesetting")
-    json_path = job_dir / "text.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({"bubbles": bubbles}, f, ensure_ascii=False, indent=2)
-
-    # 3) Apply edits from request body
-    edits = [e.model_dump() for e in body.edits]
-    result = orchestrator_apply_edits(job_dir, edits)
-
-    # Upload updated artifacts
-    storage = get_storage_service()
-    # Upload artifacts (final, text_layer) sequentially (can be parallelized later)
-    for artifact_type, artifact_path in result.get("artifacts", {}).items():
-        with open(artifact_path, "rb") as f:
-            payload_bytes = f.read()
-        storage_key = storage.save_artifact(project_id, Path(artifact_path).name, payload_bytes)
-        existing_artifact = session.exec(
-            select(ProjectArtifact).where(
-                ProjectArtifact.project_id == project_id,
-                ProjectArtifact.artifact_type == ArtifactType(artifact_type),
-            )
-        ).first()
-        if existing_artifact:
-            existing_artifact.storage_key = storage_key
-            session.add(existing_artifact)
-        else:
-            new_artifact = ProjectArtifact(
-                project_id=project_id,
-                artifact_type=ArtifactType(artifact_type),
-                storage_key=storage_key,
-            )
-            session.add(new_artifact)
-    session.commit()
-    return {"status": "ok"}
+    return {"project_id": project_id}
 
 
 def _verify_gpu_webhook_signature(raw: bytes, header_sig: str | None) -> None:
@@ -284,86 +248,28 @@ async def gpu_callback(request: Request, session: Session = Depends(get_db_sessi
         session.commit()
         return {"status": "ok"}
 
-    job_dir = get_job_dir(job_id)
-    job_dir.mkdir(parents=True, exist_ok=True)
-    cleaned_path = job_dir / "cleaned.png"
-    json_path = job_dir / "text.json"
-
-    # Prefer artifacts from callback (R2 storage_keys); fallback to shared FS for local dev
-    try:
-        artifacts = payload.get("artifacts") or {}
-        if artifacts.get("CLEANED_PAGE"):
-            with open(cleaned_path, "wb") as wf:
-                with storage.get_artifact(artifacts["CLEANED_PAGE"]) as rf:
-                    wf.write(rf.read())
-        if artifacts.get("TEXT_JSON"):
-            with open(json_path, "wb") as wf:
-                with storage.get_artifact(artifacts["TEXT_JSON"]) as rf:
-                    wf.write(rf.read())
-    except Exception:
-        pass
-
-    if not cleaned_path.exists() or not json_path.exists():
-        raise HTTPException(status_code=400, detail="missing cleaned or text.json from GPU result")
-
-    # Translate on CPU (if ja_text exists and en_text missing), then initial CPU typeset
-    try:
-        from app.pipeline.utils.textio import read_text_json, save_text_records
-        from app.pipeline.translate.gemini import GeminiTranslator
-        import os
-        data = read_text_json(json_path)
-        bubbles = data.get("bubbles", [])
-        texts: list[str] = []
-        indices: list[int] = []
-        for i, rec in enumerate(bubbles):
-            ja = (rec.get("ja_text") or "").strip()
-            has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip() != ""
-            if ja and not has_en:
-                indices.append(i)
-                texts.append(ja)
-        if texts:
-            translator = GeminiTranslator(api_key=os.getenv("GOOGLE_API_KEY", ""))
-            en_list = translator.translate_batch(texts)
-            for idx, en in zip(indices, en_list):
-                bubbles[idx]["en_text"] = en
-            save_text_records(json_path, bubbles)
-    except Exception as exc:
-        logging.warning("translation_failed", extra={"job_id": job_id, "error": str(exc)})
-        # Proceed without translation on failure; typesetter will fallback to ja_text
-
-    # Initial CPU typeset (no edits yet)
-    result = orchestrator_apply_edits(job_dir, [])
-
-    # Upload artifacts and update DB
-    storage = get_storage_service()
-    for artifact_type, artifact_path in result.get("artifacts", {}).items():
-        with open(artifact_path, "rb") as f:
-            payload_bytes = f.read()
-        storage_key = storage.save_artifact(job_id, Path(artifact_path).name, payload_bytes)
-        existing = session.exec(
-            select(ProjectArtifact).where(
-                ProjectArtifact.project_id == project.id,
-                ProjectArtifact.artifact_type == ArtifactType(artifact_type),
-            )
-        ).first()
-        if existing:
-            existing.storage_key = storage_key
-            session.add(existing)
-        else:
-            session.add(ProjectArtifact(project_id=project.id, artifact_type=ArtifactType(artifact_type), storage_key=storage_key))
-
-    # Attach editor payload to project
-    editor_payload_path = job_dir / "editor_payload.json"
-    if editor_payload_path.exists():
-        try:
-            with open(editor_payload_path, "r", encoding="utf-8") as f:
-                project.editor_data = json.load(f)
-        except Exception:
-            project.editor_data = None
-
-    project.status = ProjectStatus.COMPLETED
+    # Persist artifact references only; enqueue worker job
+    artifacts = payload.get("artifacts") or {}
+    project.status = ProjectStatus.TRANSLATING
     session.add(project)
     session.commit()
+
+    try:
+        q = get_default_queue()
+        job_id_enq = f"initial-{job_id}"
+        q.enqueue(
+            translate_and_typeset,
+            job_id,
+            artifacts,
+            job_id=job_id_enq,
+        )
+    except Exception as exc:
+        project.status = ProjectStatus.FAILED
+        project.failure_reason = f"enqueue_failed: {exc}"
+        session.add(project)
+        session.commit()
+        raise HTTPException(status_code=503, detail="Queue unavailable")
+
     return {"status": "ok"}
 
 

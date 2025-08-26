@@ -11,6 +11,8 @@ svix
 clerk_backend_api
 boto3
 httpx
+rq
+redis
 numpy
 pillow
 opencv-python

@@ -6,10 +6,13 @@ import hashlib
 import base64
 import json
 import logging
+import os
 
 import httpx
 
 from app.core.config import get_settings
+import random
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +71,35 @@ class LocalGpuClient:
         if sig:
             headers["x-gpu-signature"] = sig
 
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                resp = client.post(f"{self._base_url}/jobs", content=payload, headers=headers)
-                resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.error("gpu_submit_failed", extra={"error": str(exc), "job_id": job_id})
-            raise RuntimeError(f"gpu submit failed: {exc}") from exc
+        settings = get_settings()
+        max_attempts = int(os.getenv("GPU_SUBMIT_MAX_RETRIES", "3"))
+        base_backoff_ms = int(os.getenv("GPU_SUBMIT_INITIAL_BACKOFF_MS", "500"))
+        jitter_ms = int(os.getenv("GPU_SUBMIT_JITTER_MS", "200"))
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(f"{self._base_url}/jobs", content=payload, headers=headers)
+                    resp.raise_for_status()
+                return
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if 400 <= status_code < 500:
+                    logger.error("gpu_submit_client_error", extra={"status": status_code, "job_id": job_id})
+                    raise RuntimeError(f"gpu submit failed: {exc}") from exc
+                # else treat as retryable
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.TransportError) as exc:  # type: ignore[attr-defined]
+                # retryable
+                pass
+
+            if attempt >= max_attempts:
+                logger.error("gpu_submit_failed", extra={"attempts": attempt, "job_id": job_id})
+                raise RuntimeError("gpu submit failed after retries")
+
+            sleep_ms = base_backoff_ms * (2 ** (attempt - 1)) + random.randint(0, jitter_ms)
+            time.sleep(sleep_ms / 1000.0)
 
 
 class CloudGpuClient:
