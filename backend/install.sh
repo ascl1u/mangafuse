@@ -2,11 +2,8 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# 1. Install uv using pip
-pip install uv
+# Use pip to upgrade itself and install from the requirements file.
+pip install --upgrade pip
+pip install -r requirements-base.txt
 
-# 2. Use uv to install all dependencies from your requirements file.
-# This is much faster than using pip directly.
-uv pip install -r requirements-base.txt
-
-echo "✅ Dependency installation with uv completed successfully."
+echo "✅ Dependency installation with pip completed successfully."
