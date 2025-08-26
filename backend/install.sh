@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
-echo "Python: $(python --version 2>/dev/null || true)"
-echo "Pip: $(pip --version 2>/dev/null || true)"
+# 1. Install uv using pip
+pip install uv
 
-# Ensure latest packaging tools
-python -m pip install --upgrade pip setuptools wheel
+# 2. Use uv to install all dependencies from your requirements file.
+# This is much faster than using pip directly.
+uv pip install --system -r requirements-base.txt
 
-# Install dependencies
-tmp_req="$(mktemp)"
-pip install -r "$tmp_req"
-rm -f "$tmp_req"
-
-echo "Dependency installation completed."
-
-
+echo "✅ Dependency installation with uv completed successfully."
