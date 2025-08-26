@@ -7,6 +7,6 @@ pip install uv
 
 # 2. Use uv to install all dependencies from your requirements file.
 # This is much faster than using pip directly.
-uv pip install --system -r requirements-base.txt
+uv pip install -r requirements-base.txt
 
 echo "✅ Dependency installation with uv completed successfully."
