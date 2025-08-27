@@ -41,6 +41,7 @@ export default function App() {
   const applyEdits = useAppStore((s) => s.applyEdits)
   const applyingEdits = useAppStore((s) => s.applyingEdits)
   const downloadFile = useAppStore((s) => s.downloadFile)
+  const pendingEditIds = useAppStore((s) => s.pendingEditIds)
 
   const showAfter = state === 'COMPLETED' && editor
 
@@ -157,7 +158,6 @@ export default function App() {
                   selectedId={selectedBubbleId}
                   edits={edits}
                   onChangeText={(id, value) => updateEdit(id, { en_text: value })}
-                  onChangeFont={(id, value) => updateEdit(id, { font_size: value })}
                 />
               </div>
             </div>
@@ -166,7 +166,7 @@ export default function App() {
                 editor={editor}
                 selectedId={selectedBubbleId}
                 onSelect={setSelectedBubbleId}
-                edits={edits}
+                pendingEditIds={pendingEditIds}
               />
             </div>
           </div>

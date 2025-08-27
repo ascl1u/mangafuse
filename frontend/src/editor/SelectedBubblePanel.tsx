@@ -1,16 +1,15 @@
 import { useMemo } from 'react'
 import type { EditorPayload } from '../store'
-import { FONT_SIZE_MIN, FONT_SIZE_MAX, clamp } from '../constants'
+
 
 type Props = {
   editor?: EditorPayload
   selectedId?: number
-  edits: Record<number, { en_text?: string; font_size?: number }>
+  edits: Record<number, { en_text?: string }>
   onChangeText: (id: number, value: string) => void
-  onChangeFont: (id: number, value: number) => void
 }
 
-export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText, onChangeFont }: Props) {
+export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText }: Props) {
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
   const selected = useMemo(() => editor?.bubbles.find((b) => b.id === selectedId), [editor, selectedId])
   if (!editor) return null
@@ -20,7 +19,6 @@ export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText, o
   const cropUrl = selected?.crop_url ? `${API_BASE}${selected.crop_url}` : `${API_BASE}${editor.image_url}`
   const patch = edits[selected.id] || {}
   const text = patch.en_text ?? selected.en_text ?? ''
-  const fontSize = clamp(patch.font_size ?? selected.font_size ?? 18, FONT_SIZE_MIN, FONT_SIZE_MAX)
   return (
     <div className="space-y-3">
       <div className="w-full h-44 bg-gray-100 overflow-hidden flex items-center justify-center">
@@ -33,18 +31,6 @@ export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText, o
           rows={4}
           value={text}
           onChange={(e) => onChangeText(selected.id, e.target.value)}
-        />
-      </div>
-      <div className="space-y-1">
-        <label className="text-sm font-medium">Font size: {fontSize}</label>
-        <input
-          type="range"
-          min={FONT_SIZE_MIN}
-          max={FONT_SIZE_MAX}
-          step={1}
-          value={fontSize}
-          onChange={(e) => onChangeFont(selected.id, Number(e.target.value))}
-          className="w-full"
         />
       </div>
     </div>

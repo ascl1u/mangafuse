@@ -1,9 +1,11 @@
 export const FONT_FAMILY = 'Anime Ace'
 export const FONT_URL = '/assets/fonts/animeace2_reg.ttf'
 
-export const FONT_SIZE_MIN = 6
-export const FONT_SIZE_MAX = 48
-
-export const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v))
+// Polling / backoff defaults
+export const POLL_INITIAL_DELAY_MS = 2000
+export const POLL_MAX_DELAY_MS = 30000
+export const POLL_MAX_TIME_MS = 15 * 60 * 1000
+export const POLL_FAST_PATH_ATTEMPTS = 3
+export const POLL_DECORRELATED_JITTER = true
 
 
