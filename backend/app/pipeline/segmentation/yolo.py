@@ -96,10 +96,11 @@ def run_segmentation(
         conf=conf_thresh,
         iou=nms_iou_thresh,
         device=0,
+        half=True, #use fp16 for faster inference
         verbose=False,
     )
     if not results:
-        return {"polygons": [], "masks": [], "confidences": []}
+        return {"polygons": [], "confidences": []}
 
     # 3. Parse Raw Results
     # This step extracts masks, polygons, and confidences from the YOLO object.
@@ -108,6 +109,5 @@ def run_segmentation(
     # 4. Ultralytics has already applied NMS; return polygons/confidences
     return {
         "polygons": parsed_data["polygons"],
-        "masks": [],
         "confidences": parsed_data["confidences"],
     }
