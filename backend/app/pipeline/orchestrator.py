@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
+import logging
+import time
 
 
 class PipelineOrchestrator:
@@ -79,8 +81,9 @@ class PipelineOrchestrator:
             try:
                 self.progress_callback(stage, progress)
             except Exception:
-                # Log this error instead of swallowing it in a real application
-                pass
+                logging.getLogger(__name__).exception(
+                    "progress_callback_failed", extra={"job_id": self.job_id, "stage": stage}
+                )
 
     def _load_initial_data(self) -> None:
         """Loads the source image and prepares initial directories."""
@@ -106,6 +109,7 @@ class PipelineOrchestrator:
         from app.pipeline.utils.visualization import make_overlay
 
         self._update_progress("segmentation", 0.1)
+        t0 = time.perf_counter()
         if self.force or not (self.overlay_path.exists() and self.json_path.exists()):
             yolo_model = getattr(self.models, "yolo_model", None) if self.models else None
             result = run_segmentation(image_bgr=self.image_bgr, seg_model_path=self.seg_model, yolo_model=yolo_model)
@@ -128,6 +132,16 @@ class PipelineOrchestrator:
         self.bubbles = read_text_json(self.json_path).get("bubbles", [])
         self.stage_completed.append("segmentation")
         self._update_progress("segmentation_complete", 0.2)
+        t1 = time.perf_counter()
+        logging.getLogger(__name__).info(
+            "stage_timing",
+            extra={
+                "job_id": self.job_id,
+                "stage": "segmentation",
+                "ms": int((t1 - t0) * 1000),
+                "num_bubbles": len(self.bubbles),
+            },
+        )
 
     def _run_ocr(self) -> None:
         """Stage 2: Extracts Japanese text from segmented bubbles."""
@@ -142,6 +156,7 @@ class PipelineOrchestrator:
         from app.pipeline.utils.textio import save_text_records
 
         self._update_progress("ocr", 0.35)
+        t0 = time.perf_counter()
         if self.models and getattr(self.models, "ocr_engine", None) is not None:
             ocr_engine = self.models.ocr_engine
         else:
@@ -162,12 +177,25 @@ class PipelineOrchestrator:
             try:
                 ja_text = ocr_engine.run(binarize_for_ocr(crop_bgr))
             except Exception:
+                logging.getLogger(__name__).exception(
+                    "ocr_binarize_failed", extra={"job_id": self.job_id, "bubble_id": int(rec.get("id") or -1)}
+                )
                 ja_text = ocr_engine.run(crop_bgr) # Fallback
             rec["ja_text"] = ja_text
 
         save_text_records(self.json_path, self.bubbles)
         self.stage_completed.append("ocr")
         self._update_progress("ocr_complete", 0.45)
+        t1 = time.perf_counter()
+        logging.getLogger(__name__).info(
+            "stage_timing",
+            extra={
+                "job_id": self.job_id,
+                "stage": "ocr",
+                "ms": int((t1 - t0) * 1000),
+                "num_bubbles": len(self.bubbles),
+            },
+        )
 
     def _run_translation(self) -> None:
         """Stage 3: Translates Japanese text to English using an external API."""
@@ -180,23 +208,44 @@ class PipelineOrchestrator:
         self._update_progress("translate", 0.5)
         api_key = os.getenv("GOOGLE_API_KEY", "")
         translator = GeminiTranslator(api_key=api_key)
+        indices_to_translate: list[int] = []
+        texts_to_translate: list[str] = []
+        try:
+            for idx, rec in enumerate(self.bubbles):
+                ja_text = (rec.get("ja_text") or "").strip()
+                has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip()
+                if ja_text and (not has_en or self.force):
+                    indices_to_translate.append(idx)
+                    texts_to_translate.append(ja_text)
 
-        indices_to_translate, texts_to_translate = [], []
-        for idx, rec in enumerate(self.bubbles):
-            ja_text = (rec.get("ja_text") or "").strip()
-            has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip()
-            if ja_text and (not has_en or self.force):
-                indices_to_translate.append(idx)
-                texts_to_translate.append(ja_text)
+            t0 = time.perf_counter()
+            if texts_to_translate:
+                en_list = translator.translate_batch(texts_to_translate)
+                for i, en in zip(indices_to_translate, en_list):
+                    self.bubbles[i]["en_text"] = en
+                save_text_records(self.json_path, self.bubbles)
 
-        if texts_to_translate:
-            en_list = translator.translate_batch(texts_to_translate)
-            for i, en in zip(indices_to_translate, en_list):
-                self.bubbles[i]["en_text"] = en
-            save_text_records(self.json_path, self.bubbles)
-
-        self.stage_completed.append("translate")
-        self._update_progress("translate_complete", 0.6)
+            self.stage_completed.append("translate")
+            self._update_progress("translate_complete", 0.6)
+            t1 = time.perf_counter()
+            logging.getLogger(__name__).info(
+                "stage_timing",
+                extra={
+                    "job_id": self.job_id,
+                    "stage": "translate",
+                    "ms": int((t1 - t0) * 1000),
+                    "num_translated": len(texts_to_translate),
+                },
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "translate_failed",
+                extra={
+                    "job_id": self.job_id,
+                    "num_to_translate": len(texts_to_translate),
+                },
+            )
+            raise
 
     def _run_inpaint(self) -> None:
         """Stage 4: Removes original text from the image, creating a 'cleaned' version."""
@@ -207,6 +256,7 @@ class PipelineOrchestrator:
         from app.pipeline.utils.io import read_image_bgr, save_png
 
         self._update_progress("inpaint", 0.7)
+        t0 = time.perf_counter()
 
         if self.force or not self.text_mask_path.exists():
             imasks = []
@@ -234,6 +284,15 @@ class PipelineOrchestrator:
         save_png(self.cleaned_path, result_bgr)
         self.stage_completed.append("inpaint")
         self._update_progress("inpaint_complete", 0.85)
+        t1 = time.perf_counter()
+        logging.getLogger(__name__).info(
+            "stage_timing",
+            extra={
+                "job_id": self.job_id,
+                "stage": "inpaint",
+                "ms": int((t1 - t0) * 1000),
+            },
+        )
 
     def _run_typeset(self) -> None:
         """Stage 5: Renders the translated text onto the cleaned image."""
@@ -246,41 +305,62 @@ class PipelineOrchestrator:
         from app.pipeline.utils.textio import save_text_records
 
         self._update_progress("typeset", 0.9)
-        if not self.cleaned_path.exists():
-            raise FileNotFoundError(f"cleaned.png not found for job {self.job_id}")
+        t0 = time.perf_counter()
+        try:
+            if not self.cleaned_path.exists():
+                raise FileNotFoundError(f"cleaned.png not found for job {self.job_id}")
 
-        cleaned_image = read_image_bgr(self.cleaned_path)
-        records = [
-            BubbleText(
-                bubble_id=int(rec.get("id")),
-                polygon=rec.get("polygon") or [],
-                text=(rec.get("en_text") or rec.get("ja_text") or "").strip(),
-                font_size=(int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None),
+            cleaned_image = read_image_bgr(self.cleaned_path)
+            records = [
+                BubbleText(
+                    bubble_id=int(rec.get("id")),
+                    polygon=rec.get("polygon") or [],
+                    text=(rec.get("en_text") or rec.get("ja_text") or "").strip(),
+                    font_size=(int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None),
+                )
+                for rec in self.bubbles
+            ]
+
+            used_sizes, used_rects = render_typeset(
+                cleaned_image_bgr=cleaned_image,
+                output_final_path=self.final_path,
+                records=records,
+                font_path=self.font,
+                debug=self.debug,
+                debug_overlay_path=self.typeset_debug_path if self.debug else None,
+                text_layer_output_path=self.job_dir / "text_layer.png",
             )
-            for rec in self.bubbles
-        ]
 
-        used_sizes, used_rects = render_typeset(
-            cleaned_image_bgr=cleaned_image,
-            output_final_path=self.final_path,
-            records=records,
-            font_path=self.font,
-            debug=self.debug,
-            debug_overlay_path=self.typeset_debug_path if self.debug else None,
-            text_layer_output_path=self.job_dir / "text_layer.png",
-        )
+            for rec in self.bubbles:
+                bid = int(rec.get("id"))
+                if used_sizes and bid in used_sizes:
+                    rec["font_size"] = int(used_sizes[bid])
+                if used_rects and bid in used_rects:
+                    rect = used_rects[bid]
+                    rec["rect"] = {k: int(v) for k, v in rect.items()}
+            save_text_records(self.json_path, self.bubbles)
 
-        for rec in self.bubbles:
-            bid = int(rec.get("id"))
-            if used_sizes and bid in used_sizes:
-                rec["font_size"] = int(used_sizes[bid])
-            if used_rects and bid in used_rects:
-                rect = used_rects[bid]
-                rec["rect"] = {k: int(v) for k, v in rect.items()}
-        save_text_records(self.json_path, self.bubbles)
-
-        self.stage_completed.append("typeset")
-        self._update_progress("typeset_complete", 1.0)
+            self.stage_completed.append("typeset")
+            self._update_progress("typeset_complete", 1.0)
+            t1 = time.perf_counter()
+            logging.getLogger(__name__).info(
+                "stage_timing",
+                extra={
+                    "job_id": self.job_id,
+                    "stage": "typeset",
+                    "ms": int((t1 - t0) * 1000),
+                    "num_bubbles": len(self.bubbles),
+                },
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "typeset_failed",
+                extra={
+                    "job_id": self.job_id,
+                    "num_bubbles": len(self.bubbles),
+                },
+            )
+            raise
     
     def _build_final_payload(self) -> Dict[str, Any]:
         """Constructs the final result dictionary with paths and metadata."""
@@ -327,10 +407,10 @@ class PipelineOrchestrator:
                     crop_bgr, _ = tight_crop_from_mask(self.image_bgr, mask_gray, polygon)
                     save_png(crop_path, crop_bgr)
                     crop_url = f"/artifacts/jobs/{self.job_id}/crops/{bubble_id}.png"
-            except Exception as e:
-                # In a real app, you would log this error
-                # print(f"Could not generate crop for bubble {bubble_id}: {e}")
-                pass
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "crop_generation_failed", extra={"job_id": self.job_id, "bubble_id": bubble_id}
+                )
 
             normalized_bubbles.append(
                 {
