@@ -27,6 +27,7 @@ class PipelineOrchestrator:
         include_typeset: bool = True,
         include_translate: bool = True,
         job_dir_override: Optional[str | Path] = None,
+        models: Any | None = None,
     ):
         # Configuration
         self.job_id = job_id
@@ -61,6 +62,7 @@ class PipelineOrchestrator:
         default_font = assets_root / "fonts" / "animeace2_reg.ttf"
         self.seg_model = Path(seg_model_path) if seg_model_path else default_seg_model
         self.font = Path(font_path) if font_path else default_font
+        self.models = models
 
         # Artifact Paths
         self.overlay_path = self.job_dir / "segmentation_overlay.png"
@@ -105,7 +107,8 @@ class PipelineOrchestrator:
 
         self._update_progress("segmentation", 0.1)
         if self.force or not (self.overlay_path.exists() and self.json_path.exists()):
-            result = run_segmentation(image_bgr=self.image_bgr, seg_model_path=self.seg_model)
+            yolo_model = getattr(self.models, "yolo_model", None) if self.models else None
+            result = run_segmentation(image_bgr=self.image_bgr, seg_model_path=self.seg_model, yolo_model=yolo_model)
             polygons = result.get("polygons", [])
             confidences = result.get("confidences", [])
 
@@ -139,7 +142,10 @@ class PipelineOrchestrator:
         from app.pipeline.utils.textio import save_text_records
 
         self._update_progress("ocr", 0.35)
-        ocr_engine = MangaOcrEngine()
+        if self.models and getattr(self.models, "ocr_engine", None) is not None:
+            ocr_engine = self.models.ocr_engine
+        else:
+            ocr_engine = MangaOcrEngine()
 
         for rec in self.bubbles:
             has_ja = isinstance(rec.get("ja_text"), str) and rec["ja_text"].strip()
@@ -223,7 +229,8 @@ class PipelineOrchestrator:
             combined_img = cv2.imread(str(self.combined_mask_path), cv2.IMREAD_UNCHANGED)
             mask_for_inpaint = cv2.cvtColor(combined_img, cv2.COLOR_BGR2GRAY) if combined_img is not None else np.zeros((self.height, self.width), dtype=np.uint8)
 
-        result_bgr = run_inpainting(self.image_bgr, mask_for_inpaint)
+        lama_model = getattr(self.models, "lama_model", None) if self.models else None
+        result_bgr = run_inpainting(self.image_bgr, mask_for_inpaint, lama_model=lama_model)
         save_png(self.cleaned_path, result_bgr)
         self.stage_completed.append("inpaint")
         self._update_progress("inpaint_complete", 0.85)

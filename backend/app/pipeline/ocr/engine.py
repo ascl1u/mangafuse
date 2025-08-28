@@ -10,6 +10,10 @@ class MangaOcrEngine:
     def __init__(self) -> None:
         self._engine = None
 
+    def ensure_loaded(self) -> None:
+        """Public method to ensure the underlying model is initialized."""
+        self._ensure()
+
     def _ensure(self) -> None:
         if self._engine is None:
             try:

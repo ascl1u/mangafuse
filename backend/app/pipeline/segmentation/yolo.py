@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import cv2  # type: ignore
 import numpy as np
@@ -48,6 +48,7 @@ def run_segmentation(
     seg_model_path: Path,
     conf_thresh: float = 0.2,
     nms_iou_thresh: float = 0.40,
+    yolo_model: Optional[Any] = None,
 ) -> Dict[str, List]:
     """
     Performs speech bubble segmentation on a manga page.
@@ -61,22 +62,23 @@ def run_segmentation(
     Returns:
         A dictionary containing the filtered lists of polygons, masks, and confidences.
     """
-    try:
-        from ultralytics import YOLO  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "Ultralytics (YOLOv8) is required for segmentation. "
-            "Install AI requirements: pip install -r backend/requirements-ai-gpu.txt"
-        ) from exc
+    if yolo_model is None:
+        try:
+            from ultralytics import YOLO  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "Ultralytics (YOLOv8) is required for segmentation. "
+                "Install AI requirements: pip install -r backend/requirements-ai-gpu.txt"
+            ) from exc
 
-    if not seg_model_path.is_file():
-        raise FileNotFoundError(f"Segmentation model not found at '{seg_model_path}'.")
+        if not seg_model_path.is_file():
+            raise FileNotFoundError(f"Segmentation model not found at '{seg_model_path}'.")
 
     if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
         raise ValueError("Input image must be a color image with shape HxWx3 (BGR).")
 
     # 1. Initialize Model and Prepare Image Size
-    model = YOLO(str(seg_model_path))
+    model = yolo_model if yolo_model is not None else YOLO(str(seg_model_path))
     img_h, img_w = image_bgr.shape[:2]
 
     # Calculate optimal image size for YOLOv8 (multiple of 32)

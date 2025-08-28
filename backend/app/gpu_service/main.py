@@ -8,8 +8,9 @@ import logging
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
-from app.core.paths import get_artifacts_root, get_job_dir
+from app.core.paths import get_artifacts_root, get_job_dir, get_assets_root
 from app.pipeline.orchestrator import run_pipeline
+from app.pipeline.model_registry import ModelRegistry
 
 
 class JobInput(BaseModel):
@@ -64,12 +65,16 @@ def _run_pipeline_and_callback(body: SubmitJobBody) -> None:
         _write_bytes(dst_path, _read_bytes(src_path))
 
         # Run pipeline without translate or typeset; produce cleaned + text.json (+ optional overlay)
+        # Pull preloaded models from app state (may be None in dev)
+        models = getattr(app.state, "models", None)
+
         result = run_pipeline(
             job_id=job_id,
             image_path=str(dst_path),
             depth=mode,
             include_typeset=False,
             include_translate=False,
+            models=models,
         )
 
         # If outputs with presigned PUTs were provided, upload via HTTP PUT and then remove local files
@@ -115,3 +120,16 @@ def _run_pipeline_and_callback(body: SubmitJobBody) -> None:
 def submit_job(body: SubmitJobBody, background_tasks: BackgroundTasks) -> Dict[str, Any]:
     background_tasks.add_task(_run_pipeline_and_callback, body)
     return {"job_id": body.job_id, "status": "QUEUED"}
+
+
+@app.on_event("startup")
+def _startup_load_models() -> None:
+    """Preload heavy models once at service startup."""
+    try:
+        assets_root = get_assets_root()
+        seg_model_path = assets_root / "models" / "model.pt"
+        registry = ModelRegistry.load(seg_model_path=seg_model_path, preload_ocr=True)
+        app.state.models = registry
+    except Exception:
+        # If preload fails, leave models unset; pipeline will fallback to on-demand
+        app.state.models = None

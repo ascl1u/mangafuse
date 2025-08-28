@@ -1,7 +1,7 @@
 from __future__ import annotations
 import cv2  # type: ignore
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Any, Optional
 
 
 def _binarize_mask(mask_gray: np.ndarray) -> np.ndarray:
@@ -85,7 +85,7 @@ def _resize_roi(img: np.ndarray, mask: np.ndarray, max_side: int) -> Tuple[np.nd
     return img, mask, scale
 
 
-def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
+def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray, lama_model: Optional[Any] = None) -> np.ndarray:
     """
     Run LaMa inpainting on regions of interest (ROIs) derived from the mask, and composite
     results back into the full image. This drastically reduces peak memory compared to
@@ -96,12 +96,14 @@ def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("Pillow is required for inpainting stage") from exc
 
-    try:
-        from simple_lama_inpainting import SimpleLama  # type: ignore
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "simple-lama-inpainting is required. Install AI deps from backend/requirements-ai.txt"
-        ) from exc
+    # Defer import unless needed when no preloaded model is provided
+    if lama_model is None:
+        try:
+            from simple_lama_inpainting import SimpleLama  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "simple-lama-inpainting is required. Install AI deps from backend/requirements-ai.txt"
+            ) from exc
 
     h, w = image_bgr.shape[:2]
     if mask_gray.shape != (h, w):
@@ -135,10 +137,13 @@ def run_inpainting(image_bgr: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
         raise RuntimeError("PyTorch is required for inpainting stage") from exc
 
     # Initialize model with default device selection; prefer CUDA if available
-    try:
-        model = SimpleLama()
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("SimpleLama inpainting failed to initialize") from exc
+    if lama_model is None:
+        try:
+            model = SimpleLama()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("SimpleLama inpainting failed to initialize") from exc
+    else:
+        model = lama_model
 
     # Compose results
     result = image_bgr.copy()
