@@ -20,13 +20,14 @@ def _render_layout(
     polygon_points: List[List[float]],
     text_layer: Optional[Image.Image],
 ) -> None:
+    ascent, _ = font.getmetrics()
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
     for line, base_y, center_x in zip(layout.lines, layout.baselines_y, layout.centers_x):
         bbox = font.getbbox(line)
         w = bbox[2] - bbox[0]
         x = int(round(center_x - w / 2.0))
-        y = int(round(base_y))
+        y = int(round(base_y - ascent))
         draw_overlay.text((x, y), line, fill=(0, 0, 0, 255), font=font)
 
     mask = Image.new("L", canvas.size, 0)
