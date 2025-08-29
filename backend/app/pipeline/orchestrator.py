@@ -320,7 +320,7 @@ class PipelineOrchestrator:
                 BubbleText(
                     bubble_id=int(rec.get("id")),
                     polygon=rec.get("polygon") or [],
-                    text=(rec.get("en_text") or rec.get("ja_text") or "").strip(),
+                    text=(rec["en_text"] if "en_text" in rec else rec.get("ja_text", "")).strip(),
                     font_size=(int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None),
                 )
                 for rec in self.bubbles
@@ -514,13 +514,7 @@ def apply_edits(
                 if "en_text" in edit:
                     bubble_record["en_text"] = edit["en_text"]
                 if "font_size" in edit:
-                    val = edit.get("font_size")
-                    if isinstance(val, (int, float)):
-                        bubble_record["font_size"] = int(val)
-                    elif isinstance(val, str):
-                        vs = val.strip()
-                        if vs.isdigit():
-                            bubble_record["font_size"] = int(vs)
+                    del bubble_record["font_size"]
         except (ValueError, KeyError):
             continue
     
@@ -532,7 +526,7 @@ def apply_edits(
         BubbleText(
             bubble_id=int(rec.get("id")),
             polygon=rec.get("polygon") or [],
-            text=(rec.get("en_text") or rec.get("ja_text") or "").strip(),
+            text=(rec["en_text"] if "en_text" in rec else rec.get("ja_text", "")).strip(),
             font_size=(int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None),
         )
         for rec in bubbles
@@ -550,6 +544,8 @@ def apply_edits(
         debug=False,
         debug_overlay_path=None,
         text_layer_output_path=text_layer_path,
+        existing_text_layer_path=(text_layer_path if text_layer_path.exists() else None),
+        edited_bubble_ids=[e["id"] for e in edits],
     )
 
     if used_sizes or used_rects:

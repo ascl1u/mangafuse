@@ -287,7 +287,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     const editsArr = Object.entries(editsMap)
       .map(([id, patch]) => ({ id: Number(id), en_text: patch.en_text }))
       .filter(({ id, en_text }) => {
-        if (!en_text || !editor) return false
+        if (en_text === undefined || !editor) return false
         const bubble = editor.bubbles.find((b) => b.id === id)
         const current = (bubble?.en_text ?? '').trim()
         return en_text.trim() !== current
