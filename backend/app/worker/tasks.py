@@ -77,7 +77,18 @@ def translate_and_typeset(project_id: str, artifacts: Dict[str, str] | None = No
 
     # Initial typeset (no edits)
     job_dir = get_job_dir(project_id)
-    result = orchestrator_apply_edits(job_dir, [])
+    try:
+        result = orchestrator_apply_edits(job_dir, [])
+    except Exception as exc:
+        # Mark project failed with a clear reason and stop
+        with worker_session_scope() as session:
+            project = session.get(Project, project_id)
+            if project:
+                project.status = ProjectStatus.FAILED
+                project.failure_reason = f"typeset_failed: {exc}"
+                session.add(project)
+        logger.exception("initial_typeset_failed", extra={"project_id": project_id})
+        return
 
     storage = get_storage_service()
     with worker_session_scope() as session:
@@ -164,7 +175,17 @@ def retypeset_after_edits(project_id: str, revision: int) -> None:
         project = session.get(Project, project_id)
         if project and isinstance(project.editor_data, dict):
             edits = [e for e in project.editor_data.get("edits", []) if isinstance(e, dict)]
-    result = orchestrator_apply_edits(job_dir, edits)
+    try:
+        result = orchestrator_apply_edits(job_dir, edits)
+    except Exception as exc:
+        with worker_session_scope() as session:
+            project = session.get(Project, project_id)
+            if project:
+                project.status = ProjectStatus.FAILED
+                project.failure_reason = f"typeset_failed: {exc}"
+                session.add(project)
+        logger.exception("retypeset_failed", extra={"project_id": project_id, "revision": revision})
+        return
 
     storage = get_storage_service()
     with worker_session_scope() as session:

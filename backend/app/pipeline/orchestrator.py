@@ -257,33 +257,38 @@ class PipelineOrchestrator:
 
         self._update_progress("inpaint", 0.7)
         t0 = time.perf_counter()
+        try:
+            if self.force or not self.text_mask_path.exists():
+                imasks = []
+                for rec in self.bubbles:
+                    poly = rec.get("polygon") or []
+                    m = np.zeros((self.height, self.width), dtype=np.uint8)
+                    if poly:
+                        pts = np.array(poly, dtype=np.int32)
+                        cv2.fillPoly(m, [pts], 1)
+                    imasks.append(m)
+                text_mask = build_text_inpaint_mask(self.image_bgr, imasks, self.bubbles)
+                save_png(self.text_mask_path, text_mask)
 
-        if self.force or not self.text_mask_path.exists():
-            imasks = []
-            for rec in self.bubbles:
-                poly = rec.get("polygon") or []
-                m = np.zeros((self.height, self.width), dtype=np.uint8)
-                if poly:
-                    pts = np.array(poly, dtype=np.int32)
-                    cv2.fillPoly(m, [pts], 1)
-                imasks.append(m)
-            text_mask = build_text_inpaint_mask(self.image_bgr, imasks, self.bubbles)
-            save_png(self.text_mask_path, text_mask)
+            text_mask_img = read_image_bgr(self.text_mask_path)
+            text_mask_gray = cv2.cvtColor(text_mask_img, cv2.COLOR_BGR2GRAY)
 
-        text_mask_img = read_image_bgr(self.text_mask_path)
-        text_mask_gray = cv2.cvtColor(text_mask_img, cv2.COLOR_BGR2GRAY)
+            if np.any(text_mask_gray):
+                mask_for_inpaint = text_mask_gray
+            else:
+                combined_img = cv2.imread(str(self.combined_mask_path), cv2.IMREAD_UNCHANGED)
+                mask_for_inpaint = cv2.cvtColor(combined_img, cv2.COLOR_BGR2GRAY) if combined_img is not None else np.zeros((self.height, self.width), dtype=np.uint8)
 
-        if np.any(text_mask_gray):
-            mask_for_inpaint = text_mask_gray
-        else:
-            combined_img = cv2.imread(str(self.combined_mask_path), cv2.IMREAD_UNCHANGED)
-            mask_for_inpaint = cv2.cvtColor(combined_img, cv2.COLOR_BGR2GRAY) if combined_img is not None else np.zeros((self.height, self.width), dtype=np.uint8)
-
-        lama_model = getattr(self.models, "lama_model", None) if self.models else None
-        result_bgr = run_inpainting(self.image_bgr, mask_for_inpaint, lama_model=lama_model)
-        save_png(self.cleaned_path, result_bgr)
-        self.stage_completed.append("inpaint")
-        self._update_progress("inpaint_complete", 0.85)
+            lama_model = getattr(self.models, "lama_model", None) if self.models else None
+            result_bgr = run_inpainting(self.image_bgr, mask_for_inpaint, lama_model=lama_model)
+            save_png(self.cleaned_path, result_bgr)
+            self.stage_completed.append("inpaint")
+            self._update_progress("inpaint_complete", 0.85)
+        except Exception as e:
+            logging.getLogger(__name__).exception(
+                "inpaint_failed", extra={"job_id": self.job_id}
+            )
+            raise RuntimeError("inpaint stage failed") from e
         t1 = time.perf_counter()
         logging.getLogger(__name__).info(
             "stage_timing",
@@ -352,7 +357,7 @@ class PipelineOrchestrator:
                     "num_bubbles": len(self.bubbles),
                 },
             )
-        except Exception:
+        except Exception as e:
             logging.getLogger(__name__).exception(
                 "typeset_failed",
                 extra={
@@ -360,7 +365,7 @@ class PipelineOrchestrator:
                     "num_bubbles": len(self.bubbles),
                 },
             )
-            raise
+            raise RuntimeError("typeset stage failed") from e
     
     def _build_final_payload(self) -> Dict[str, Any]:
         """Constructs the final result dictionary with paths and metadata."""
