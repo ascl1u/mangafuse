@@ -9,6 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Depends, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import attributes
 
 from app.core.config import get_settings
 from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser, ClerkWebhookEvent
@@ -167,7 +168,7 @@ def update_project(
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
-    """Update project editor data and enqueue re-typeset job (asynchronous)."""
+    """Atomically update project data and enqueue a re-typeset job."""
     db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -177,18 +178,38 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Update editor_data and increment revision
-    existing_editor: Dict[str, Any] = project.editor_data if isinstance(project.editor_data, dict) else {}
-    # Reassign entire JSON to ensure SQLAlchemy persists JSONB changes (avoid in-place mutation)
-    new_editor = dict(existing_editor)
-    new_editor["edits"] = [e.model_dump() for e in body.edits]
-    project.editor_data = new_editor
+    if not isinstance(project.editor_data, dict) or "bubbles" not in project.editor_data:
+         raise HTTPException(status_code=409, detail="Project is not in a valid state for editing.")
+    # Create a mutable copy of the editor data and a lookup map for bubbles.
+    new_editor_data = dict(project.editor_data)
+    bubbles = new_editor_data.get("bubbles", [])
+    bubbles_by_id = {b.get("id"): b for b in bubbles if "id" in b}
+
+    # Apply incoming edits directly to the bubbles list.
+    edited_bubble_ids = []
+    for edit in body.edits:
+        bubble = bubbles_by_id.get(edit.id)
+        if bubble:
+            edited_bubble_ids.append(edit.id)
+            if edit.en_text is not None:
+                bubble["en_text"] = edit.en_text
+            if edit.font_size is not None:
+                bubble["font_size"] = edit.font_size
+            else: # If font size is not provided, clear any existing one to trigger recalculation.
+                bubble.pop("font_size", None)
+
+    # The 'edits' list is no longer stored, 'bubbles' is the single source of truth.
+    new_editor_data.pop("edits", None)
+    project.editor_data = new_editor_data
+    # Mark the JSONB field as modified to ensure SQLAlchemy detects the change.
+    attributes.flag_modified(project, "editor_data")
+
     project.editor_data_rev = int(project.editor_data_rev or 0) + 1
     project.status = ProjectStatus.UPDATING
     session.add(project)
     session.commit()
-
-    # Enqueue high-priority re-typeset job with revision for stale-job skipping
+    
+    # Enqueue job, now passing the list of edited bubble IDs for optimization.
     try:
         q = get_high_priority_queue()
         job_id = f"retypeset-{project_id}-{project.editor_data_rev}"
@@ -196,11 +217,12 @@ def update_project(
             retypeset_after_edits,
             project_id,
             project.editor_data_rev,
+            edited_bubble_ids=edited_bubble_ids, # Pass the list of IDs
             job_id=job_id,
             at_front=True,
         )
     except Exception as exc:
-        # Rollback state to avoid leaving in UPDATING forever
+        # If enqueuing fails, roll back the status to avoid getting stuck in UPDATING.
         project.status = ProjectStatus.FAILED
         project.failure_reason = f"enqueue_failed: {exc}"
         session.add(project)
@@ -345,7 +367,7 @@ def download_package(
         raise
 
 
-# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard  
+# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard  
 
 def _verify_clerk_webhook(request: Request, body: bytes) -> None:
     """Verify Clerk webhook using Svix headers when secret is configured.
@@ -367,7 +389,7 @@ def _verify_clerk_webhook(request: Request, body: bytes) -> None:
     except WebhookVerificationError:
         raise HTTPException(status_code=401, detail="invalid signature")
 
-# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard  
+# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard  
 @router.post("/clerk/webhook", summary="Clerk user sync webhook", status_code=status.HTTP_200_OK)
 async def clerk_webhook(request: Request, session: Session = Depends(get_db_session)) -> Dict[str, str]:
     raw = await request.body()

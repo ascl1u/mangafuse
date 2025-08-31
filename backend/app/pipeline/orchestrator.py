@@ -366,7 +366,7 @@ class PipelineOrchestrator:
                 },
             )
             raise RuntimeError("typeset stage failed") from e
-    
+
     def _build_final_payload(self) -> Dict[str, Any]:
         """Constructs the final result dictionary with paths and metadata."""
         result: Dict[str, Any] = {
@@ -455,7 +455,7 @@ class PipelineOrchestrator:
 
         if self.depth == "full":
             self._run_typeset()
-        
+
         self._generate_editor_assets()
 
         return self._build_final_payload()
@@ -468,8 +468,6 @@ def run_pipeline(
 ) -> Dict[str, Any]:
     """
     High-level wrapper to execute the full pipeline via the orchestrator class.
-    
-    This maintains a simple functional API for consumers like Celery tasks.
     """
     orchestrator = PipelineOrchestrator(job_id, image_path, **kwargs)
     return orchestrator.run()
@@ -477,14 +475,14 @@ def run_pipeline(
 
 def apply_edits(
     job_dir: Path,
-    edits: List[Dict[str, Any]],
+    edited_bubble_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     import json
     import cv2  # type: ignore
     import logging
     from app.pipeline.utils.textio import read_text_json, save_text_records
     from app.pipeline.typeset.model import BubbleText
-    from app.pipeline.typeset.render import render_typeset, TextOverflowError
+    from app.pipeline.typeset.render import render_typeset
     from app.core.paths import get_assets_root
 
     job_id = job_dir.name
@@ -498,35 +496,17 @@ def apply_edits(
     if not json_path.exists():
         raise FileNotFoundError(f"text.json missing for job {job_id}")
 
-    # Persist raw edits for audit/debugging
-    with open(job_dir / "edits.json", "w", encoding="utf-8") as f:
-        json.dump(edits, f, ensure_ascii=False, indent=2)
-
+    # The API is the source of truth. This function re-renders from text.json.
     data = read_text_json(json_path)
     bubbles = data.get("bubbles", [])
-    
     bubbles_by_id: Dict[int, Dict[str, Any]] = {int(b["id"]): b for b in bubbles if "id" in b}
 
-    edited_bubble_ids_set = {int(e["id"]) for e in edits if "id" in e}
-    for bubble_id in edited_bubble_ids_set:
-        if bubble_id in bubbles_by_id and 'error' in bubbles_by_id[bubble_id]:
-            del bubbles_by_id[bubble_id]['error']
-
-    for edit in edits:
-        try:
-            bubble_id = int(edit["id"])
-            if bubble_id in bubbles_by_id:
-                bubble_record = bubbles_by_id[bubble_id]
-                if "en_text" in edit:
-                    bubble_record["en_text"] = edit["en_text"]
-                if "font_size" in edit:
-                    # Font size is auto-calculated, remove stale values on edit
-                    if "font_size" in bubble_record:
-                        del bubble_record["font_size"]
-        except (ValueError, KeyError):
-            continue
-    
-    save_text_records(json_path, bubbles)
+    # Clear any previous errors from bubbles that were part of this edit,
+    # as we are about to re-validate them via rendering.
+    if edited_bubble_ids:
+        for bubble_id in edited_bubble_ids:
+            if bubble_id in bubbles_by_id and 'error' in bubbles_by_id[bubble_id]:
+                del bubbles_by_id[bubble_id]['error']
 
     font = get_assets_root() / "fonts" / "animeace2_reg.ttf"
 
@@ -539,12 +519,12 @@ def apply_edits(
         )
         for rec in bubbles
     ]
-    
+
     img_cleaned = cv2.imread(str(cleaned_path), cv2.IMREAD_COLOR)
     if img_cleaned is None:
         raise FileNotFoundError(f"Failed to read cleaned image for job {job_id}")
 
-    # Unpack all three values; the third is the list of errors.
+    # Pass the list of edited bubble IDs to enable partial re-rendering.
     used_sizes, used_rects, errors = render_typeset(
         cleaned_image_bgr=img_cleaned,
         output_final_path=final_path,
@@ -554,7 +534,7 @@ def apply_edits(
         debug_overlay_path=None,
         text_layer_output_path=text_layer_path,
         existing_text_layer_path=(text_layer_path if text_layer_path.exists() else None),
-        edited_bubble_ids=[e["id"] for e in edits],
+        edited_bubble_ids=edited_bubble_ids,
     )
 
     # Process all errors returned by the renderer and attach them to the bubble records.
@@ -573,9 +553,9 @@ def apply_edits(
             if used_rects and bid in used_rects:
                 rect = used_rects[bid]
                 rec["rect"] = {k: int(v) for k, v in rect.items()}
-    
+
     save_text_records(json_path, bubbles)
-        
+
     # Build/update editor payload. This will now include any 'error' fields attached above.
     editor_payload_path = job_dir / "editor_payload.json"
     try:

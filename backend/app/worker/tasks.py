@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from sqlmodel import select
 
@@ -75,10 +75,10 @@ def translate_and_typeset(project_id: str, artifacts: Dict[str, str] | None = No
     except Exception as exc:
         logger.warning("translation_failed", extra={"project_id": project_id, "error": str(exc)})
 
-    # Initial typeset (no edits)
+    # Initial typeset
     job_dir = get_job_dir(project_id)
     try:
-        result = orchestrator_apply_edits(job_dir, [])
+        result = orchestrator_apply_edits(job_dir)
     except Exception as exc:
         # Mark project failed with a clear reason and stop
         with worker_session_scope() as session:
@@ -124,7 +124,7 @@ def translate_and_typeset(project_id: str, artifacts: Dict[str, str] | None = No
         session.add(project)
 
 
-def retypeset_after_edits(project_id: str, revision: int) -> None:
+def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Optional[List[int]] = None) -> None:
     job_dir = get_job_dir(project_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -162,22 +162,20 @@ def retypeset_after_edits(project_id: str, revision: int) -> None:
                 with storage.get_artifact(cleaned_artifact.storage_key) as rf:
                     wf.write(rf.read())
 
-        # Rebuild text.json from editor_data
+        # The API has already updated the bubbles list. This worker's only job
+        # is to read that canonical state and re-run the typesetter.
         bubbles = project.editor_data.get("bubbles") if isinstance(project.editor_data, dict) else None
         if not bubbles or not isinstance(bubbles, list):
             raise RuntimeError("Editor data missing bubbles for re-typesetting")
+
+        # Rebuild text.json from the canonical 'bubbles' list in the database.
         json_path = job_dir / "text.json"
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump({"bubbles": bubbles}, f, ensure_ascii=False, indent=2)
 
-    # Apply edits using latest edits list from editor_data
-    edits: list[Dict[str, Any]] = []
-    with worker_session_scope() as session:
-        project = session.get(Project, project_id)
-        if project and isinstance(project.editor_data, dict):
-            edits = [e for e in project.editor_data.get("edits", []) if isinstance(e, dict)]
     try:
-        result = orchestrator_apply_edits(job_dir, edits)
+        # Pass the edited_bubble_ids to the orchestrator for partial re-rendering.
+        result = orchestrator_apply_edits(job_dir, edited_bubble_ids=edited_bubble_ids)
     except Exception as exc:
         with worker_session_scope() as session:
             project = session.get(Project, project_id)
@@ -193,7 +191,7 @@ def retypeset_after_edits(project_id: str, revision: int) -> None:
                             project.editor_data = json.load(f)
                     except Exception:
                         logger.exception("failed_to_persist_editor_data_on_error", extra={"project_id": project_id})
-                
+
                 session.add(project)
         logger.exception("retypeset_failed", extra={"project_id": project_id, "revision": revision})
         return

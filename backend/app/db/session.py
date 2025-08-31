@@ -53,7 +53,7 @@ _worker_engine: Engine | None = None
 _worker_sessionmaker: sessionmaker | None = None
 
 def get_worker_sessionmaker() -> sessionmaker:
-    """Get a sessionmaker for a Celery worker. Caches the engine and sessionmaker."""
+    """Get a sessionmaker for an rq worker. Caches the engine and sessionmaker."""
     global _worker_engine, _worker_sessionmaker
     if _worker_engine is None:
         _worker_engine, _worker_sessionmaker = create_engine_and_sessionmaker()
