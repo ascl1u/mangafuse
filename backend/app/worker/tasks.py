@@ -148,6 +148,7 @@ def retypeset_after_edits(project_id: str, revision: int) -> None:
                 )
             ).first()
             if not cleaned_artifact:
+                # Fallback to FINAL_PNG if CLEANED_PAGE is missing
                 cleaned_artifact = session.exec(
                     select(ProjectArtifact).where(
                         ProjectArtifact.project_id == project_id,
@@ -183,6 +184,16 @@ def retypeset_after_edits(project_id: str, revision: int) -> None:
             if project:
                 project.status = ProjectStatus.FAILED
                 project.failure_reason = f"typeset_failed: {exc}"
+                # On failure, persist the editor payload which now contains all error fields.
+                # This makes the complete set of errors available to the frontend.
+                editor_payload_path = job_dir / "editor_payload.json"
+                if editor_payload_path.exists():
+                    try:
+                        with open(editor_payload_path, "r", encoding="utf-8") as f:
+                            project.editor_data = json.load(f)
+                    except Exception:
+                        logger.exception("failed_to_persist_editor_data_on_error", extra={"project_id": project_id})
+                
                 session.add(project)
         logger.exception("retypeset_failed", extra={"project_id": project_id, "revision": revision})
         return
@@ -225,5 +236,3 @@ def retypeset_after_edits(project_id: str, revision: int) -> None:
 
         project.status = ProjectStatus.COMPLETED
         session.add(project)
-
-

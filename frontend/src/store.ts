@@ -11,6 +11,7 @@ import {
 export type Depth = 'cleaned' | 'full'
 
 type ProjectStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
+type EditorStatus = 'IDLE' | 'UPDATING' | 'EDIT_FAILED'
 
 export type PollPayload = {
   project_id: string
@@ -22,6 +23,7 @@ export type PollPayload = {
     [key: string]: string
   }
   editor_data?: EditorPayload
+  editor_payload_url?: string
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
@@ -58,9 +60,6 @@ async function uploadAndStart(file: File, getToken: () => Promise<string | null>
   return { projectId, taskId }
 }
 
-// legacy helper kept for reference; not used after backoff integration
-
-// Poll variant that returns headers/status for backoff and does not throw on 429/503
 async function pollOnceWithHeaders(
   projectId: string,
   getToken: () => Promise<string | null>,
@@ -119,6 +118,7 @@ export type EditorBubble = {
   font_size?: number
   rect?: { x: number; y: number; w: number; h: number }
   crop_url?: string
+  error?: string
 }
 
 export type EditorPayload = {
@@ -152,11 +152,12 @@ type StoreState = {
 
   // Editor state
   editor?: EditorPayload
+  editorStatus: EditorStatus
   selectedBubbleId?: number
   setSelectedBubbleId: (id?: number) => void
   edits: EditsMap
   updateEdit: (id: number, patch: { en_text?: string }) => void
-  loadEditor: (projectId: string, result: PollPayload) => Promise<void>
+  loadEditor: (projectId: string, result: PollPayload, updatedBubbleIds?: number[]) => Promise<void>
 
   // Apply edits & exports
   applyingEdits: boolean
@@ -181,6 +182,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   error: undefined,
 
   editor: undefined,
+  editorStatus: 'IDLE',
   selectedBubbleId: undefined,
   setSelectedBubbleId: (id) => set({ selectedBubbleId: id }),
   edits: {},
@@ -196,7 +198,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       }
     }
   },
-  async loadEditor(projectId, result) {
+  async loadEditor(projectId, result, updatedBubbleIds: number[] = []) {
     function resolveAssetPath(path: string | undefined): string | undefined {
       if (!path) return undefined
       if (/^https?:\/\//i.test(path)) return path
@@ -206,71 +208,43 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }
 
     function extractTextLayerUrlFromResult(r: PollPayload): string | undefined {
-      // 1) embedded in editor_data
-      const ed = r.editor_data
-      if (ed && typeof ed.text_layer_url === 'string' && ed.text_layer_url.length > 0) {
-        return resolveAssetPath(ed.text_layer_url)
-      }
-      // 2) artifacts: direct common keys
       const artifacts = r.artifacts || {}
-      const direct = artifacts['TEXT_LAYER'] || artifacts['text_layer_url'] || artifacts['TEXT_LAYER_URL']
+      const direct = artifacts['TEXT_LAYER_PNG'] || artifacts['text_layer_url']
       if (typeof direct === 'string' && direct.length > 0) return resolveAssetPath(direct)
-      // 3) any key that contains "text_layer" (case-insensitive)
-      for (const [k, v] of Object.entries(artifacts)) {
-        if (k.toLowerCase().includes('text_layer') && typeof v === 'string' && v.length > 0) {
-          return resolveAssetPath(v)
-        }
-      }
-      // 4) any value that ends with text_layer.png
-      for (const v of Object.values(artifacts)) {
-        if (typeof v === 'string' && v.toLowerCase().endsWith('text_layer.png')) {
-          return resolveAssetPath(v)
-        }
-      }
       return undefined
     }
 
-    // Prefer payload embedded in the API response
-    if (result.editor_data) {
+    const dataToLoad = result.editor_data
+    if (dataToLoad) {
       let saved: EditsMap = {}
       try {
         const raw = localStorage.getItem(`mf_edits_${projectId}`)
         if (raw) saved = JSON.parse(raw)
       } catch {
-        // ignore storage failures in MVP
+        // ignore
       }
-      const bubbles = result.editor_data.bubbles.map((b) => {
-        const e = saved[b.id]
-        return e ? { ...b, en_text: e.en_text ?? b.en_text } : b
-      })
-      // discover server text layer URL from payload/artifacts
-      const tl = extractTextLayerUrlFromResult(result)
-      set({ editor: { ...result.editor_data, bubbles, text_layer_url: tl }, edits: saved })
-      return
-    }
-    // Fallback: load from a public URL when provided (not typical in Phase 2)
-    const editorPayloadUrl = result.artifacts?.["EDITOR_PAYLOAD"]
-    if (editorPayloadUrl) {
-      const url = `${API_BASE}${editorPayloadUrl}?t=${Date.now()}`
-      try {
-        const resp = await fetch(url)
-        if (!resp.ok) return
-        const payload = (await resp.json()) as EditorPayload
-        let saved: EditsMap = {}
-        try {
-          const raw = localStorage.getItem(`mf_edits_${projectId}`)
-          if (raw) saved = JSON.parse(raw)
-        } catch {
-          // ignore storage failures in MVP
+      const oldBubblesById = new Map(get().editor?.bubbles.map((b) => [b.id, b]));
+      const bubbles = dataToLoad.bubbles.map((newBubble) => {
+        const oldBubble = oldBubblesById.get(newBubble.id);
+        const userEdit = saved[newBubble.id];
+        let finalError = newBubble.error; // Trust the error from the API first.
+        // If the API reports no error for this bubble, check if we should persist an old one.
+        if (!finalError) {
+            // If the bubble had an error before and it was NOT part of this specific update, keep the old error.
+            if (oldBubble?.error && !updatedBubbleIds.includes(newBubble.id)) {
+                finalError = oldBubble.error;
+            }
         }
-        const bubbles = payload.bubbles.map((b) => {
-          const e = saved[b.id]
-          return e ? { ...b, en_text: e.en_text ?? b.en_text } : b
-        })
-        set({ editor: { ...payload, bubbles }, edits: saved })
-      } catch {
-        // ignore fetch/parse failures
-      }
+
+        return { 
+          ...newBubble, 
+          en_text: userEdit?.en_text ?? newBubble.en_text, 
+          error: finalError,
+        };
+      });
+      
+      const tl = extractTextLayerUrlFromResult(result)
+      set({ editor: { ...dataToLoad, bubbles, text_layer_url: tl }, edits: saved })
     }
   },
 
@@ -283,7 +257,6 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
     const editsMap = get().edits
     const editor = get().editor
-    // Filter to only bubbles with actual text changes
     const editsArr = Object.entries(editsMap)
       .map(([id, patch]) => ({ id: Number(id), en_text: patch.en_text }))
       .filter(({ id, en_text }) => {
@@ -294,7 +267,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       })
     if (editsArr.length === 0) return
 
-    set({ applyingEdits: true })
+    set({ applyingEdits: true, editorStatus: 'UPDATING', error: undefined })
     try {
       const token = await getToken()
       if (!token) throw new Error('Not authenticated')
@@ -307,11 +280,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
         body: JSON.stringify({ edits: editsArr }),
       })
       if (!resp.ok) throw new Error('Apply edits failed')
-
       // mark all edited bubble ids as pending for spinner overlays
       set({ pendingEditIds: editsArr.map((e) => e.id) })
-
-      // Cancel any existing polling
+      // Cancel any existing polling to prevent duplicate attempts
       const prev = get().pollController
       if (prev) prev.abort()
       const controller = new AbortController()
@@ -325,16 +296,29 @@ export const useAppStore = create<StoreState>((set, get) => ({
         try {
           const { data, retryAfterMs } = await pollOnceWithHeaders(projectId, getToken, controller.signal)
           if (data) {
-            set({ state: data.status, meta: data.meta })
+            set({ state: data.status, meta: data.meta });
             if (data.status === 'COMPLETED' || data.status === 'FAILED') {
-              set({ result: data, state: data.status, pendingEditIds: [] })
-              if (data.status === 'COMPLETED') {
-                await get().loadEditor(projectId, data)
+              const idsInFlight = get().pendingEditIds;
+              set({ result: data, state: data.status });
+              
+              await get().loadEditor(projectId, data, idsInFlight);
+              set({ pendingEditIds: [] });
+              
+              if (data.status === 'FAILED') {
+                const apiError = data.error || 'Edit failed';
+                let userFriendlyError = apiError;
+                
+                if (apiError.includes('typeset_failed')) {
+                  userFriendlyError = 'Text is too long to fit in the errored bubbles.';
+                }
+                
+                set({ error: userFriendlyError, editorStatus: 'EDIT_FAILED' });
+              } else {
+                set({ editorStatus: 'IDLE' });
               }
-              break
+              break;
             }
           }
-          // compute next delay
           const nextBase = POLL_INITIAL_DELAY_MS
           let next = nextBase
           if (attempts < POLL_FAST_PATH_ATTEMPTS) {
@@ -347,9 +331,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           await sleep(next, controller.signal)
           attempts++
         } catch (err) {
-          // Abort stops loop
           if (err instanceof DOMException && err.name === 'AbortError') break
-          // On transient errors, back off and continue
           const nextDelay = POLL_DECORRELATED_JITTER ? nextDelayDecorrelated(prevDelay) : Math.min(POLL_MAX_DELAY_MS, prevDelay * 2)
           prevDelay = nextDelay
           try { await sleep(nextDelay, controller.signal) } catch { break }
@@ -357,9 +339,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
         }
       }
     } catch (err) {
-      // surface error in store.error without breaking app
       const message = err instanceof Error ? err.message : String(err)
-      set({ error: message, pendingEditIds: [] })
+      set({ error: message, pendingEditIds: [], editorStatus: 'EDIT_FAILED' })
     } finally {
       set({ applyingEdits: false })
     }
@@ -395,7 +376,6 @@ export const useAppStore = create<StoreState>((set, get) => ({
     try {
       const { projectId, taskId } = await uploadAndStart(file, getToken)
       set({ projectId, taskId, state: 'PROCESSING' })
-
       // Cancel any existing polling
       const prev = get().pollController
       if (prev) prev.abort()

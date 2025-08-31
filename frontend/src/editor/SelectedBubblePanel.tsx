@@ -26,6 +26,11 @@ export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText }:
       </div>
       <div className="space-y-1">
         <label className="text-sm font-medium">Text</label>
+        {selected.error && (
+          <div className="p-2 text-sm bg-red-50 text-red-700 rounded border border-red-200">
+            <strong>Error:</strong> {selected.error}
+          </div>
+        )}
         <textarea
           className="w-full border rounded p-2 text-sm"
           rows={4}
@@ -36,5 +41,3 @@ export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText }:
     </div>
   )
 }
-
-

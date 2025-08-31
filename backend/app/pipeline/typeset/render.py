@@ -13,6 +13,13 @@ from app.pipeline.typeset.layout import compute_optimal_layout
 from app.pipeline.typeset.model import BubbleText, LayoutResult
 
 
+class TextOverflowError(ValueError):
+    """Custom exception for text that cannot fit in a bubble."""
+    def __init__(self, message: str, bubble_id: int):
+        super().__init__(message)
+        self.bubble_id = bubble_id
+
+
 def _render_layout(
     canvas: Image.Image,
     font: ImageFont.FreeTypeFont,
@@ -58,7 +65,7 @@ def render_typeset(
     text_layer_output_path: Optional[Path] = None,
     existing_text_layer_path: Optional[Path] = None,
     edited_bubble_ids: Optional[List[int]] = None,
-) -> Tuple[dict, dict]:
+) -> Tuple[dict, dict, List[TextOverflowError]]:
     if not font_path.exists():
         raise FileNotFoundError(f"Font not found: {font_path}")
 
@@ -80,6 +87,7 @@ def render_typeset(
 
     used_sizes: Dict[int, int] = {}
     used_rects: Dict[int, Dict[str, int]] = {}
+    errors: List[TextOverflowError] = []
 
     # If edited_bubble_ids provided and we have a text layer, restrict to patch rendering
     patch_mode = text_layer_img is not None and edited_bubble_ids is not None and len(edited_bubble_ids) > 0
@@ -117,6 +125,9 @@ def render_typeset(
             size_used, layout = find_optimal_font_size(rec.text, shp, font_path, font_cache)
 
         if layout is None or size_used <= 0:
+            errors.append(
+                TextOverflowError("The text is too long for this bubble.", bubble_id=rec.bubble_id)
+            )
             continue
 
         if size_used not in font_cache:
@@ -165,4 +176,4 @@ def render_typeset(
     if text_layer_output_path is not None and text_layer_img is not None:
         text_layer_img.save(text_layer_output_path)
         
-    return used_sizes, used_rects
+    return used_sizes, used_rects, errors

@@ -326,7 +326,7 @@ class PipelineOrchestrator:
                 for rec in self.bubbles
             ]
 
-            used_sizes, used_rects = render_typeset(
+            used_sizes, used_rects, _ = render_typeset(
                 cleaned_image_bgr=cleaned_image,
                 output_final_path=self.final_path,
                 records=records,
@@ -481,9 +481,10 @@ def apply_edits(
 ) -> Dict[str, Any]:
     import json
     import cv2  # type: ignore
+    import logging
     from app.pipeline.utils.textio import read_text_json, save_text_records
     from app.pipeline.typeset.model import BubbleText
-    from app.pipeline.typeset.render import render_typeset
+    from app.pipeline.typeset.render import render_typeset, TextOverflowError
     from app.core.paths import get_assets_root
 
     job_id = job_dir.name
@@ -506,6 +507,11 @@ def apply_edits(
     
     bubbles_by_id: Dict[int, Dict[str, Any]] = {int(b["id"]): b for b in bubbles if "id" in b}
 
+    edited_bubble_ids_set = {int(e["id"]) for e in edits if "id" in e}
+    for bubble_id in edited_bubble_ids_set:
+        if bubble_id in bubbles_by_id and 'error' in bubbles_by_id[bubble_id]:
+            del bubbles_by_id[bubble_id]['error']
+
     for edit in edits:
         try:
             bubble_id = int(edit["id"])
@@ -514,7 +520,9 @@ def apply_edits(
                 if "en_text" in edit:
                     bubble_record["en_text"] = edit["en_text"]
                 if "font_size" in edit:
-                    del bubble_record["font_size"]
+                    # Font size is auto-calculated, remove stale values on edit
+                    if "font_size" in bubble_record:
+                        del bubble_record["font_size"]
         except (ValueError, KeyError):
             continue
     
@@ -536,7 +544,8 @@ def apply_edits(
     if img_cleaned is None:
         raise FileNotFoundError(f"Failed to read cleaned image for job {job_id}")
 
-    used_sizes, used_rects = render_typeset(
+    # Unpack all three values; the third is the list of errors.
+    used_sizes, used_rects, errors = render_typeset(
         cleaned_image_bgr=img_cleaned,
         output_final_path=final_path,
         records=records,
@@ -548,6 +557,14 @@ def apply_edits(
         edited_bubble_ids=[e["id"] for e in edits],
     )
 
+    # Process all errors returned by the renderer and attach them to the bubble records.
+    for err in errors:
+        logging.getLogger(__name__).warning(
+            "text_overflow_handled", extra={"job_id": job_id, "bubble_id": err.bubble_id, "error": str(err)}
+        )
+        if err.bubble_id in bubbles_by_id:
+            bubbles_by_id[err.bubble_id]['error'] = str(err)
+
     if used_sizes or used_rects:
         for rec in bubbles:
             bid = int(rec.get("id"))
@@ -556,9 +573,10 @@ def apply_edits(
             if used_rects and bid in used_rects:
                 rect = used_rects[bid]
                 rec["rect"] = {k: int(v) for k, v in rect.items()}
-        save_text_records(json_path, bubbles)
+    
+    save_text_records(json_path, bubbles)
         
-    # Build/update editor payload for the frontend editor and worker persistence
+    # Build/update editor payload. This will now include any 'error' fields attached above.
     editor_payload_path = job_dir / "editor_payload.json"
     try:
         normalized: List[Dict[str, Any]] = []
@@ -580,28 +598,16 @@ def apply_edits(
                     "font_size": rec.get("font_size"),
                     "rect": rect_payload,
                     "crop_url": crop_url,
+                    "error": rec.get("error"), # Pass the error field to the final payload if it exists
                 }
             )
 
         # Prefer cleaned image as background for accurate editor preview
-        if cleaned_path.exists():
-            image_url = f"/artifacts/jobs/{job_id}/cleaned.png"
-        elif final_path.exists():
-            image_url = f"/artifacts/jobs/{job_id}/final.png"
-        else:
-            image_url = f"/artifacts/jobs/{job_id}/segmentation_overlay.png"
+        image_url = f"/artifacts/jobs/{job_id}/cleaned.png" if cleaned_path.exists() else f"/artifacts/jobs/{job_id}/segmentation_overlay.png"
 
         # Infer width/height from cleaned image where possible
-        width_val: Optional[int] = None
-        height_val: Optional[int] = None
-        try:
-            img = cv2.imread(str(cleaned_path))
-            if img is not None:
-                h, w = img.shape[:2]
-                width_val = int(w)
-                height_val = int(h)
-        except Exception:
-            pass
+        img_for_dims = cv2.imread(str(cleaned_path))
+        width_val, height_val = (img_for_dims.shape[1], img_for_dims.shape[0]) if img_for_dims is not None else (None, None)
 
         editor_payload: Dict[str, Any] = {
             "image_url": image_url,
@@ -614,6 +620,11 @@ def apply_edits(
     except Exception:
         # Do not fail the job if editor payload write has issues
         pass
+
+    # If any errors occurred, raise the first one. This signals to the worker that
+    # the job failed, but only after the editor_payload.json with all errors has been saved.
+    if errors:
+        raise errors[0]
 
     # Expose local artifact file paths for the worker to persist via storage
     artifacts: Dict[str, str] = {}

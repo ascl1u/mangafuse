@@ -148,9 +148,9 @@ def get_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    payload: Dict[str, Any] = {"project_id": str(project.id), "status": project.status}
+    payload: Dict[str, Any] = {"project_id": str(project.id), "status": project.status, "error": project.failure_reason}
 
-    if project.status == ProjectStatus.COMPLETED:
+    if project.status in [ProjectStatus.COMPLETED, ProjectStatus.FAILED]:
         artifacts = session.exec(select(ProjectArtifact).where(ProjectArtifact.project_id == project.id)).all()
         payload["artifacts"] = {
             art.artifact_type.value: storage.get_download_url(art.storage_key) for art in artifacts

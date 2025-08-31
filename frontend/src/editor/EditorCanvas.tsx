@@ -8,6 +8,7 @@ type Props = {
   onSelect: (id: number) => void
   pendingEditIds: number[]
   disabled?: boolean
+  hasEditFailed?: boolean
 }
 
 function useHtmlImage(src?: string): HTMLImageElement | undefined {
@@ -91,8 +92,8 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
         <Layer listening={false}>
           {img && <KonvaImage image={img} width={stageWidth} height={stageHeight} />}
         </Layer>
-        {/* Server-rendered text layer for authoritative preview */}
         <Layer listening={false}>
+          {/* Always show the text layer */}
           {textLayerImg && <KonvaImage image={textLayerImg} width={stageWidth} height={stageHeight} />}
         </Layer>
         <Layer>
@@ -116,6 +117,17 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
                   height={rect.h}
                   fill="rgba(0,0,0,0.001)"
                 />
+                {/* Show a red border if the bubble has an error */}
+                {b.error && (
+                  <Rect
+                    x={rect.x0}
+                    y={rect.y0}
+                    width={rect.w}
+                    height={rect.h}
+                    stroke="#ef4444"
+                    strokeWidth={2}
+                  />
+                )}
                 {isSelected && (
                   <Rect
                     x={rect.x0}

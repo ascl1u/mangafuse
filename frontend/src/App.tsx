@@ -39,11 +39,11 @@ export default function App() {
   const setSelectedBubbleId = useAppStore((s) => s.setSelectedBubbleId)
   const updateEdit = useAppStore((s) => s.updateEdit)
   const applyEdits = useAppStore((s) => s.applyEdits)
-  const applyingEdits = useAppStore((s) => s.applyingEdits)
   const downloadFile = useAppStore((s) => s.downloadFile)
   const pendingEditIds = useAppStore((s) => s.pendingEditIds)
+  const editorStatus = useAppStore((s) => s.editorStatus)
 
-  const showAfter = state === 'COMPLETED' && editor
+  const showEditor = (state === 'COMPLETED' || state === 'FAILED') && editor
 
   return (
     <div className="min-h-screen w-full bg-gray-50">
@@ -71,7 +71,7 @@ export default function App() {
       </div>
 
       <main className="mx-auto max-w-[1280px] px-6 py-6">
-        {!showAfter && (
+        {!showEditor && (
           <form onSubmit={onSubmit} className="grid" style={{ gridTemplateColumns: '320px 1fr', columnGap: 24 }}>
             <div className="space-y-4">
               <div className="bg-white p-4 rounded border">
@@ -127,7 +127,7 @@ export default function App() {
           </form>
         )}
 
-        {showAfter && editor && (
+        {showEditor && editor && (
           <div className="grid" style={{ gridTemplateColumns: '320px 1fr', columnGap: 24 }}>
             <div className="space-y-4">
               <div className="bg-white p-4 rounded border">
@@ -146,10 +146,15 @@ export default function App() {
                 <button
                   className="px-3 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
                   onClick={() => applyEdits(getToken)}
-                  disabled={applyingEdits}
+                  disabled={editorStatus === 'UPDATING'}
                 >
-                  {applyingEdits ? 'Applying…' : 'Apply edits'}
+                  {editorStatus === 'UPDATING' ? 'Applying…' : 'Apply edits'}
                 </button>
+                {editorStatus === 'EDIT_FAILED' && (
+                    <div className="mt-2 p-2 text-sm bg-red-50 text-red-700 rounded border border-red-200">
+                        <strong>Error:</strong> {error}
+                    </div>
+                )}
               </div>
               <div className="bg-white p-4 rounded border">
                 <div className="font-medium mb-2">Selected bubble</div>
@@ -167,6 +172,8 @@ export default function App() {
                 selectedId={selectedBubbleId}
                 onSelect={setSelectedBubbleId}
                 pendingEditIds={pendingEditIds}
+                disabled={editorStatus === 'UPDATING'}
+                hasEditFailed={editorStatus === 'EDIT_FAILED'}
               />
             </div>
           </div>
