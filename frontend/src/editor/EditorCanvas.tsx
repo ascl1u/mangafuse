@@ -45,16 +45,20 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
   const img = useHtmlImage(imageUrl)
   const [textLayerUrl, setTextLayerUrl] = useState<string | undefined>(undefined)
   useEffect(() => {
-    if (editor.text_layer_url) {
-      const raw = editor.text_layer_url
-      const isAbsolute = /^https?:\/\//i.test(raw)
-      const base = isAbsolute ? raw : `${API_BASE}${raw}`
-      const withCacheBust = isAbsolute ? base : `${base}?t=${Date.now()}`
-      setTextLayerUrl(withCacheBust)
-    } else {
+    const raw = editor.text_layer_url
+    if (!raw) {
       setTextLayerUrl(undefined)
+      return
     }
-  }, [API_BASE, editor.text_layer_url])
+    const isAbsolute = /^https?:\/\//i.test(raw)
+    const base = isAbsolute ? raw : `${API_BASE}${raw}`
+    let finalUrl = base
+    if (!isAbsolute) {
+      const sep = base.includes('?') ? '&' : '?'
+      finalUrl = `${base}${sep}t=${Date.now()}`
+    }
+    setTextLayerUrl(finalUrl)
+  }, [API_BASE, editor])
   const textLayerImg = useHtmlImage(textLayerUrl)
 
   // Fit-to-width sizing: container width is measured via ref
@@ -71,12 +75,19 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
     return () => obs.disconnect()
   }, [])
 
-  const aspect = editor.height / editor.width
+  // Robust sizing: fall back to intrinsic image size if editor payload is missing dims
+  const baseWidth = (typeof editor.width === 'number' && editor.width > 0)
+    ? editor.width
+    : (img?.naturalWidth ?? 1)
+  const baseHeight = (typeof editor.height === 'number' && editor.height > 0)
+    ? editor.height
+    : (img?.naturalHeight ?? 1)
+  const aspect = baseHeight / baseWidth
   const stageWidth = Math.max(100, containerWidth)
   const stageHeight = Math.max(100, Math.round(stageWidth * aspect))
 
   // Scale from image coords to stage coords
-  const scale = stageWidth / editor.width
+  const scale = stageWidth / baseWidth
 
   const bubbles = editor.bubbles as EditorBubble[]
 
@@ -88,14 +99,22 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
 
   return (
     <div ref={containerRef} className="w-full">
-      <Stage width={stageWidth} height={stageHeight} listening={!disabled}>
+      <Stage width={stageWidth} height={stageHeight}>
         <Layer listening={false}>
           {img && <KonvaImage image={img} width={stageWidth} height={stageHeight} />}
         </Layer>
         <Layer listening={false}>
-          {/* Always show the text layer */}
-          {textLayerImg && <KonvaImage image={textLayerImg} width={stageWidth} height={stageHeight} />}
+          {/* Show text layer only when not updating to avoid flashing stale text */}
+          {textLayerImg && !disabled && (
+            <KonvaImage image={textLayerImg} width={stageWidth} height={stageHeight} />
+          )}
         </Layer>
+        {disabled && (
+          <Layer listening={false}>
+            {/* Subtle overlay to indicate updating state */}
+            <Rect x={0} y={0} width={stageWidth} height={stageHeight} fill="rgba(255,255,255,0.3)" />
+          </Layer>
+        )}
         <Layer>
           {polygons.map((poly, idx) => {
             const b = bubbles[idx]
@@ -149,6 +168,7 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
             )
           })}
         </Layer>
+        
       </Stage>
     </div>
   )

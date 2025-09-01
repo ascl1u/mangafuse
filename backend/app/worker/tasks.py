@@ -12,6 +12,7 @@ from app.core.storage import get_storage_service
 from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus
 from app.db.session import worker_session_scope
 from app.pipeline.orchestrator import apply_edits as orchestrator_apply_edits
+from app.worker.queue import get_default_queue
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ def _ensure_cleaned_and_text(job_id: str, artifacts: Dict[str, str] | None = Non
     return cleaned_path, json_path
 
 
-def translate_and_typeset(project_id: str, artifacts: Dict[str, str] | None = None) -> None:
+def process_translation(project_id: str, artifacts: Dict[str, str] | None = None) -> None:
     with worker_session_scope() as session:
         project = session.get(Project, project_id)
         if not project:
@@ -75,7 +76,23 @@ def translate_and_typeset(project_id: str, artifacts: Dict[str, str] | None = No
     except Exception as exc:
         logger.warning("translation_failed", extra={"project_id": project_id, "error": str(exc)})
 
-    # Initial typeset
+    # Chain to initial typeset on the default queue
+    try:
+        q = get_default_queue()
+        job_id_enq = f"initial-typeset-{project_id}"
+        q.enqueue(process_initial_typeset, project_id, job_id=job_id_enq)
+    except Exception as exc:
+        # If enqueue fails, mark project failed so the user sees a clear state
+        with worker_session_scope() as session:
+            project = session.get(Project, project_id)
+            if project:
+                project.status = ProjectStatus.FAILED
+                project.failure_reason = f"enqueue_failed: {exc}"
+                session.add(project)
+        logger.exception("enqueue_initial_typeset_failed", extra={"project_id": project_id})
+
+
+def process_initial_typeset(project_id: str) -> None:
     job_dir = get_job_dir(project_id)
     try:
         result = orchestrator_apply_edits(job_dir)

@@ -24,7 +24,7 @@ from app.core.storage import get_storage_service, StorageService
 from app.core.paths import get_job_dir
 from app.pipeline.orchestrator import apply_edits as orchestrator_apply_edits
 from app.worker.queue import get_default_queue, get_high_priority_queue
-from app.worker.tasks import translate_and_typeset, retypeset_after_edits
+from app.worker.tasks import process_translation, retypeset_after_edits
 from app.core.gpu_client import GpuClient, get_gpu_client
 
 
@@ -150,6 +150,8 @@ def get_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     payload: Dict[str, Any] = {"project_id": str(project.id), "status": project.status, "error": project.failure_reason}
+    # Expose editor revision so the frontend can wait for a specific update
+    payload["editor_data_rev"] = int(project.editor_data_rev or 0)
 
     if project.status in [ProjectStatus.COMPLETED, ProjectStatus.FAILED]:
         artifacts = session.exec(select(ProjectArtifact).where(ProjectArtifact.project_id == project.id)).all()
@@ -278,9 +280,9 @@ async def gpu_callback(request: Request, session: Session = Depends(get_db_sessi
 
     try:
         q = get_default_queue()
-        job_id_enq = f"initial-{job_id}"
+        job_id_enq = f"translate-{job_id}"
         q.enqueue(
-            translate_and_typeset,
+            process_translation,
             job_id,
             artifacts,
             job_id=job_id_enq,

@@ -10,7 +10,7 @@ import {
 
 export type Depth = 'cleaned' | 'full'
 
-type ProjectStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
+type ProjectStatus = 'PENDING' | 'PROCESSING' | 'TRANSLATING' | 'UPDATING' | 'COMPLETED' | 'FAILED'
 type EditorStatus = 'IDLE' | 'UPDATING' | 'EDIT_FAILED'
 
 export type PollPayload = {
@@ -19,6 +19,7 @@ export type PollPayload = {
   task_state?: string
   meta?: { stage?: string; progress?: number }
   error?: string
+  editor_data_rev?: number
   artifacts?: {
     [key: string]: string
   }
@@ -268,6 +269,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
     if (editsArr.length === 0) return
 
     set({ applyingEdits: true, editorStatus: 'UPDATING', error: undefined })
+    // mark all edited bubble ids as pending immediately for spinner overlays
+    set({ pendingEditIds: editsArr.map((e) => e.id) })
     try {
       const token = await getToken()
       if (!token) throw new Error('Not authenticated')
@@ -280,8 +283,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
         body: JSON.stringify({ edits: editsArr }),
       })
       if (!resp.ok) throw new Error('Apply edits failed')
-      // mark all edited bubble ids as pending for spinner overlays
-      set({ pendingEditIds: editsArr.map((e) => e.id) })
+      // pendingEditIds already set; keep them until the new editor_data arrives
       // Cancel any existing polling to prevent duplicate attempts
       const prev = get().pollController
       if (prev) prev.abort()
@@ -291,6 +293,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
       const t0 = Date.now()
       let prevDelay = POLL_INITIAL_DELAY_MS
       let attempts = 0
+      // Wait until we see a COMPLETED with a higher editor_data_rev than before
+      const startRev = get().result?.editor_data_rev ?? 0
       for (;;) {
         if (Date.now() - t0 > POLL_MAX_TIME_MS) break
         try {
@@ -301,22 +305,25 @@ export const useAppStore = create<StoreState>((set, get) => ({
               const idsInFlight = get().pendingEditIds;
               set({ result: data, state: data.status });
               
-              await get().loadEditor(projectId, data, idsInFlight);
-              set({ pendingEditIds: [] });
-              
-              if (data.status === 'FAILED') {
-                const apiError = data.error || 'Edit failed';
-                let userFriendlyError = apiError;
-                
-                if (apiError.includes('typeset_failed')) {
-                  userFriendlyError = 'Text is too long to fit in the errored bubbles.';
-                }
-                
-                set({ error: userFriendlyError, editorStatus: 'EDIT_FAILED' });
+              // Only load the editor once the revision increases to avoid stale payloads
+              const rev = data.editor_data_rev ?? 0
+              if (data.status === 'COMPLETED' && rev <= startRev) {
+                // keep polling until we see the new revision
               } else {
-                set({ editorStatus: 'IDLE' });
+                await get().loadEditor(projectId, data, idsInFlight);
+                set({ pendingEditIds: [] });
+                if (data.status === 'FAILED') {
+                  const apiError = data.error || 'Edit failed';
+                  let userFriendlyError = apiError;
+                  if (apiError.includes('typeset_failed')) {
+                    userFriendlyError = 'Text is too long to fit in the errored bubbles.';
+                  }
+                  set({ error: userFriendlyError, editorStatus: 'EDIT_FAILED' });
+                } else {
+                  set({ editorStatus: 'IDLE' });
+                }
+                break;
               }
-              break;
             }
           }
           const nextBase = POLL_INITIAL_DELAY_MS

@@ -43,7 +43,7 @@ export default function App() {
   const pendingEditIds = useAppStore((s) => s.pendingEditIds)
   const editorStatus = useAppStore((s) => s.editorStatus)
 
-  const showEditor = (state === 'COMPLETED' || state === 'FAILED') && editor
+  const showEditor = !!editor
 
   return (
     <div className="min-h-screen w-full bg-gray-50">
@@ -108,7 +108,7 @@ export default function App() {
                   <div className="mt-3 space-y-2">
                     <div className="text-sm text-gray-600">Project: {projectId}</div>
                     {meta?.progress !== undefined && <ProgressBar progress={meta.progress} />}
-                    <div className="text-sm">State: {state}{meta?.stage ? ` — ${meta.stage}` : ''}</div>
+                    <div className="text-sm">State: {state === 'TRANSLATING' ? 'Translating…' : state}{meta?.stage ? ` — ${meta.stage}` : ''}</div>
                   </div>
                 )}
                 {error && (
