@@ -76,6 +76,7 @@ async def create_project(
     project_id: str,
     filename: str,
     storage_key: str,
+    request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
     gpu_client: GpuClient = Depends(get_gpu_client),
@@ -92,6 +93,39 @@ async def create_project(
     db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
     if not db_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Idempotency handling using Redis (via RQ queue connection)
+    idemp_key = request.headers.get("X-Idempotency-Key")
+    q = get_default_queue()
+    r = q.connection
+    idemp_redis_key = None
+    if idemp_key:
+        # Namespace by user to avoid cross-user collisions
+        idemp_redis_key = f"idemp:create_project:{db_user.id}:{idemp_key}"
+        cached = r.get(idemp_redis_key)
+        if cached:
+            try:
+                raw = cached.decode("utf-8") if isinstance(cached, (bytes, bytearray)) else cached
+                resp = json.loads(raw)
+                # Return immediately with cached response
+                return {"project_id": resp.get("project_id", project_id)}
+            except Exception:
+                # Fall through on parse errors
+                pass
+
+        # If the project already exists, treat as idempotent success
+        existing = session.exec(
+            select(Project).where(Project.id == project_id, Project.user_id == db_user.id)
+        ).first()
+        if existing:
+            return {"project_id": str(existing.id)}
+
+        # Acquire a short lock to prevent duplicate GPU submissions on concurrent retries
+        lock_key = f"{idemp_redis_key}:lock"
+        acquired = r.set(lock_key, "1", nx=True, ex=60)
+        if not acquired:
+            # Another identical request is in-flight; return a stable response without re-submitting
+            return {"project_id": project_id}
 
     project = Project(id=project_id, user_id=db_user.id, title=filename)
     artifact = ProjectArtifact(project_id=project.id, artifact_type=ArtifactType.SOURCE_RAW, storage_key=storage_key)
@@ -113,7 +147,18 @@ async def create_project(
     session.add(project)
     session.add(artifact)
     session.commit()
-    return {"project_id": str(project.id)}
+
+    response_payload = {"project_id": str(project.id)}
+    # Cache idempotent result for a limited time
+    if idemp_key and idemp_redis_key:
+        try:
+            r.setex(idemp_redis_key, 60 * 60 * 24, json.dumps(response_payload))
+            r.delete(f"{idemp_redis_key}:lock")
+        except Exception:
+            # Best-effort; ignore caching errors
+            pass
+
+    return response_payload
 
 
 @router.post("/projects/{project_id}/upload", summary="Upload a source file (local dev)")
@@ -167,6 +212,7 @@ def get_project(
 def update_project(
     project_id: str,
     body: ApplyEditsRequest,
+    request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
@@ -182,6 +228,21 @@ def update_project(
 
     if not isinstance(project.editor_data, dict) or "bubbles" not in project.editor_data:
          raise HTTPException(status_code=409, detail="Project is not in a valid state for editing.")
+
+    # Idempotency handling for apply-edits using Redis
+    idemp_key = request.headers.get("X-Idempotency-Key")
+    idemp_redis_key = None
+    if idemp_key:
+        q = get_high_priority_queue()
+        r = q.connection
+        idemp_redis_key = f"idemp:update_project:{project.user_id}:{idemp_key}"
+        cached = r.get(idemp_redis_key)
+        if cached:
+            return {"project_id": project_id}
+        lock_key = f"{idemp_redis_key}:lock"
+        acquired = r.set(lock_key, "1", nx=True, ex=60)
+        if not acquired:
+            return {"project_id": project_id}
     # Create a mutable copy of the editor data and a lookup map for bubbles.
     new_editor_data = dict(project.editor_data)
     bubbles = new_editor_data.get("bubbles", [])
@@ -230,6 +291,15 @@ def update_project(
         session.add(project)
         session.commit()
         raise HTTPException(status_code=503, detail="Queue unavailable")
+
+    # Cache idempotent result for a limited time
+    if idemp_key and idemp_redis_key:
+        try:
+            r = get_high_priority_queue().connection
+            r.setex(idemp_redis_key, 60 * 60 * 24, json.dumps({"project_id": project_id}))
+            r.delete(f"{idemp_redis_key}:lock")
+        except Exception:
+            pass
 
     return {"project_id": project_id}
 
@@ -281,17 +351,18 @@ async def gpu_callback(request: Request, session: Session = Depends(get_db_sessi
     try:
         q = get_default_queue()
         job_id_enq = f"translate-{job_id}"
-        q.enqueue(
-            process_translation,
-            job_id,
-            artifacts,
-            job_id=job_id_enq,
-        )
+        # Idempotency for duplicate GPU callbacks: no-op if the job already exists
+        existing = q.fetch_job(job_id_enq)
+        if not existing:
+            q.enqueue(
+                process_translation,
+                job_id,
+                artifacts,
+                job_id=job_id_enq,
+            )
     except Exception as exc:
-        project.status = ProjectStatus.FAILED
-        project.failure_reason = f"enqueue_failed: {exc}"
-        session.add(project)
-        session.commit()
+        # Treat enqueue errors as transient; avoid flipping to FAILED on duplicate callback races
+        logging.getLogger(__name__).exception("enqueue_translate_failed", extra={"project_id": job_id})
         raise HTTPException(status_code=503, detail="Queue unavailable")
 
     return {"status": "ok"}

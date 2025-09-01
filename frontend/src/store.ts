@@ -147,6 +147,7 @@ type StoreState = {
   meta?: { stage?: string; progress?: number }
   result?: PollPayload
   error?: string
+  submitting: boolean
 
   start: (file: File, getToken: () => Promise<string | null>) => Promise<void>
   reset: () => void
@@ -181,6 +182,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   meta: undefined,
   result: undefined,
   error: undefined,
+  submitting: false,
 
   editor: undefined,
   editorStatus: 'IDLE',
@@ -379,7 +381,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   async start(file, getToken) {
-    set({ error: undefined, result: undefined, state: 'PENDING' })
+    set({ error: undefined, result: undefined, state: 'PENDING', submitting: true })
     try {
       const { projectId, taskId } = await uploadAndStart(file, getToken)
       set({ projectId, taskId, state: 'PROCESSING' })
@@ -429,6 +431,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
       set({ error: message })
+    } finally {
+      set({ submitting: false })
     }
   },
 
@@ -440,6 +444,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       meta: undefined,
       result: undefined,
       error: undefined,
+      submitting: false,
       editor: undefined,
       selectedBubbleId: undefined,
       edits: {},

@@ -23,6 +23,7 @@ export default function App() {
   const meta = useAppStore((s) => s.meta)
   const error = useAppStore((s) => s.error)
   const start = useAppStore((s) => s.start)
+  const submitting = useAppStore((s) => s.submitting)
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -42,6 +43,7 @@ export default function App() {
   const downloadFile = useAppStore((s) => s.downloadFile)
   const pendingEditIds = useAppStore((s) => s.pendingEditIds)
   const editorStatus = useAppStore((s) => s.editorStatus)
+  const applyingEdits = useAppStore((s) => s.applyingEdits)
 
   const showEditor = !!editor
 
@@ -81,7 +83,8 @@ export default function App() {
                     type="file"
                     accept="image/*"
                     onChange={(e) => setFile(e.target.files?.[0] || null)}
-                    className="block w-full text-sm text-gray-900 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    className="block w-full text-sm text-gray-900 disabled:opacity-50 disabled:cursor-not-allowed file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    disabled={!isSignedIn || submitting}
                     required
                   />
                 </SignedIn>
@@ -101,8 +104,8 @@ export default function App() {
                 </label>
               </div>
               <div className="bg-white p-4 rounded border">
-                <button type="submit" className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 w-full" disabled={!isSignedIn}>
-                  Submit
+                <button type="submit" className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 w-full" disabled={!isSignedIn || submitting}>
+                  {submitting ? 'Submitting…' : 'Submit'}
                 </button>
                 {projectId && (
                   <div className="mt-3 space-y-2">
@@ -134,10 +137,11 @@ export default function App() {
                 <div className="font-medium mb-2">Download</div>
                 <div className="flex items-center gap-2">
                   <button
-                    className="px-3 py-2 rounded bg-gray-800 text-white"
+                    className="px-3 py-2 rounded bg-gray-800 text-white disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={() => downloadFile(getToken)}
+                    disabled={editorStatus === 'UPDATING' || applyingEdits}
                   >
-                    Download
+                    {editorStatus === 'UPDATING' ? 'Updating…' : 'Download'}
                   </button>
                 </div>
               </div>
