@@ -1,7 +1,7 @@
-import { Link, Outlet } from '@tanstack/react-router'
+import { createRootRoute, Link, Outlet } from '@tanstack/react-router'
 import { SignedIn, SignedOut, SignInButton, SignUpButton, UserButton } from '@clerk/clerk-react'
 
-export default function RootLayout() {
+function RootLayout() {
   const X_URL = import.meta.env.VITE_X_URL || '#'
   const DISCORD_URL = import.meta.env.VITE_DISCORD_URL || '#'
   return (
@@ -43,4 +43,6 @@ export default function RootLayout() {
   )
 }
 
-
+export const Route = createRootRoute({
+  component: RootLayout,
+})

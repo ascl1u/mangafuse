@@ -1,4 +1,6 @@
-export default function PricingPage() {
+import { createFileRoute } from '@tanstack/react-router'
+
+function PricingPage() {
   return (
     <div className="max-w-2xl">
       <h1 className="text-xl font-semibold mb-3">Pricing</h1>
@@ -7,4 +9,6 @@ export default function PricingPage() {
   )
 }
 
-
+export const Route = createFileRoute('/pricing')({
+  component: PricingPage,
+})

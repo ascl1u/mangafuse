@@ -1,3 +1,4 @@
+import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useAuth, SignedIn, SignedOut } from '@clerk/clerk-react'
 import { useAppStore } from '../store'
@@ -13,7 +14,7 @@ function ProgressBar({ progress }: { progress: number }) {
   )
 }
 
-export default function IndexPage() {
+function IndexPage() {
   const { isSignedIn, getToken } = useAuth()
   const [file, setFile] = useState<File | null>(null)
   const depth = useAppStore((s) => s.depth)
@@ -162,4 +163,6 @@ export default function IndexPage() {
   )
 }
 
-
+export const Route = createFileRoute('/')({
+  component: IndexPage,
+})
