@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import zipfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -39,6 +40,115 @@ def _ensure_cleaned_and_text(job_id: str, artifacts: Dict[str, str] | None = Non
         raise RuntimeError("missing cleaned or text.json from GPU result")
 
     return cleaned_path, json_path
+
+
+def _package_and_upload_zip(project_id: str, storage, session) -> None:
+    """Create a flat zip with final.png, cleaned.png, text_layer.png and upload.
+
+    - Best-effort: failures are logged but do not alter project status.
+    - Idempotent: updates existing DOWNLOADABLE_ZIP artifact if present.
+    """
+    try:
+        # Ensure any prior DB writes are visible to subsequent selects
+        try:
+            session.flush()
+        except Exception:
+            pass
+
+        job_dir = get_job_dir(project_id)
+        zip_name = f"mangafuse_{project_id}.zip"
+        zip_tmp_path = job_dir / f".tmp-{zip_name}"
+
+        desired: List[tuple[ArtifactType, str]] = [
+            (ArtifactType.FINAL_PNG, "final.png"),
+            (ArtifactType.CLEANED_PAGE, "cleaned.png"),
+            (ArtifactType.TEXT_LAYER_PNG, "text_layer.png"),
+        ]
+
+        # Build zip on disk to avoid large in-memory buffers. Use a tmp name to avoid self-overwrite in local storage.
+        with zipfile.ZipFile(zip_tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            num_written = 0
+            for art_type, arcname in desired:
+                # Prefer local job_dir files first for freshest artifacts
+                local_path = job_dir / arcname
+                if local_path.exists():
+                    try:
+                        zf.write(local_path, arcname=arcname)
+                        num_written += 1
+                        continue
+                    except Exception:
+                        logger.exception(
+                            "zip_add_file_failed",
+                            extra={"project_id": project_id, "file": str(local_path)},
+                        )
+                # Fallback to storage if local file missing
+                artifact_row = session.exec(
+                    select(ProjectArtifact).where(
+                        ProjectArtifact.project_id == project_id,
+                        ProjectArtifact.artifact_type == art_type,
+                    )
+                ).first()
+                if artifact_row and artifact_row.storage_key:
+                    try:
+                        with storage.get_artifact(artifact_row.storage_key) as rf:
+                            zf.writestr(arcname, rf.read())
+                            num_written += 1
+                    except Exception:
+                        logger.exception(
+                            "zip_read_storage_failed",
+                            extra={"project_id": project_id, "artifact_type": art_type.value},
+                        )
+            if num_written == 0:
+                logger.info("zip_skipped_no_files", extra={"project_id": project_id})
+                try:
+                    if zip_tmp_path.exists():
+                        zip_tmp_path.unlink()
+                except Exception:
+                    logger.warning("zip_tmp_cleanup_failed", extra={"project_id": project_id, "path": str(zip_tmp_path)})
+                return
+
+        size_bytes = zip_tmp_path.stat().st_size if zip_tmp_path.exists() else 0
+        # Stream upload using file handle to avoid loading entire zip into memory
+        with open(zip_tmp_path, "rb") as f:
+            storage_key = storage.save_artifact(project_id, zip_name, f)
+
+        # Upsert the DOWNLOADABLE_ZIP artifact
+        existing_zip = session.exec(
+            select(ProjectArtifact).where(
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == ArtifactType.DOWNLOADABLE_ZIP,
+            )
+        ).first()
+        if existing_zip:
+            existing_zip.storage_key = storage_key
+            session.add(existing_zip)
+        else:
+            session.add(
+                ProjectArtifact(
+                    project_id=project_id,
+                    artifact_type=ArtifactType.DOWNLOADABLE_ZIP,
+                    storage_key=storage_key,
+                )
+            )
+
+        # Cleanup the temporary zip file regardless of storage backend.
+        try:
+            if zip_tmp_path.exists():
+                zip_tmp_path.unlink()
+        except Exception:
+            # Non-fatal cleanup failure
+            logger.warning("zip_tmp_cleanup_failed", extra={"project_id": project_id, "path": str(zip_tmp_path)})
+
+        logger.info(
+            "zip_packaged",
+            extra={
+                "project_id": project_id,
+                "size_bytes": size_bytes,
+                "num_files": num_written,
+            },
+        )
+    except Exception:
+        logger.exception("zip_package_failed", extra={"project_id": project_id})
 
 
 def process_translation(project_id: str, artifacts: Dict[str, str] | None = None) -> None:
@@ -139,6 +249,9 @@ def process_initial_typeset(project_id: str) -> None:
 
         project.status = ProjectStatus.COMPLETED
         session.add(project)
+
+        # Best-effort: package and upload downloadable zip
+        _package_and_upload_zip(project_id, storage, session)
 
 
 def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Optional[List[int]] = None) -> None:
@@ -251,3 +364,6 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
 
         project.status = ProjectStatus.COMPLETED
         session.add(project)
+
+        # Best-effort: package and upload downloadable zip after re-typeset
+        _package_and_upload_zip(project_id, storage, session)

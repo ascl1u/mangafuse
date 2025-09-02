@@ -14,6 +14,7 @@ class ProjectStatus(str, Enum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
     TRANSLATING = "TRANSLATING"
+    TYPESETTING = "TYPESETTING"
     UPDATING = "UPDATING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -24,6 +25,7 @@ class ArtifactType(str, Enum):
     CLEANED_PAGE = "CLEANED_PAGE"
     FINAL_PNG = "FINAL_PNG"
     TEXT_LAYER_PNG = "TEXT_LAYER_PNG"
+    DOWNLOADABLE_ZIP = "DOWNLOADABLE_ZIP"
 
 
 class User(SQLModel, table=True):

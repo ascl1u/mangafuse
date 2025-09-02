@@ -8,7 +8,7 @@ from pathlib import Path
 import logging
 
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import attributes
 
 from app.core.config import get_settings
@@ -227,7 +227,7 @@ def update_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     if not isinstance(project.editor_data, dict) or "bubbles" not in project.editor_data:
-         raise HTTPException(status_code=409, detail="Project is not in a valid state for editing.")
+        raise HTTPException(status_code=409, detail="Project is not in a valid state for editing.")
 
     # Idempotency handling for apply-edits using Redis
     idemp_key = request.headers.get("X-Idempotency-Key")
@@ -258,7 +258,7 @@ def update_project(
                 bubble["en_text"] = edit.en_text
             if edit.font_size is not None:
                 bubble["font_size"] = edit.font_size
-            else: # If font size is not provided, clear any existing one to trigger recalculation.
+            else:  # If font size is not provided, clear any existing one to trigger recalculation.
                 bubble.pop("font_size", None)
 
     # The 'edits' list is no longer stored, 'bubbles' is the single source of truth.
@@ -271,7 +271,7 @@ def update_project(
     project.status = ProjectStatus.UPDATING
     session.add(project)
     session.commit()
-    
+
     # Enqueue job, now passing the list of edited bubble IDs for optimization.
     try:
         q = get_high_priority_queue()
@@ -280,7 +280,7 @@ def update_project(
             retypeset_after_edits,
             project_id,
             project.editor_data_rev,
-            edited_bubble_ids=edited_bubble_ids, # Pass the list of IDs
+            edited_bubble_ids=edited_bubble_ids,  # Pass the list of IDs
             job_id=job_id,
             at_front=True,
         )
@@ -318,7 +318,9 @@ def _verify_gpu_webhook_signature(raw: bytes, header_sig: str | None) -> None:
 
 
 @router.post("/gpu/callback", summary="GPU job completion webhook")
-async def gpu_callback(request: Request, session: Session = Depends(get_db_session), storage: StorageService = Depends(get_storage_service)) -> Dict[str, str]:
+async def gpu_callback(
+    request: Request, session: Session = Depends(get_db_session), storage: StorageService = Depends(get_storage_service)
+) -> Dict[str, str]:
     raw = await request.body()
     _verify_gpu_webhook_signature(raw, request.headers.get("x-gpu-signature"))
     try:
@@ -375,73 +377,42 @@ def download_package(
     session: Session = Depends(get_db_session),
     storage: StorageService = Depends(get_storage_service),
 ):
-    """Stream a zip containing available artifacts for a project without loading into memory."""
-    import os
-    import zipfile
-    import tempfile
-    from typing import Iterator
-
+    """
+    Returns a redirect to a presigned URL for the project's downloadable zip archive.
+    The zip file is generated asynchronously by a background worker.
+    """
     db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+
     project = session.exec(
         select(Project).where(Project.id == project_id, Project.user_id == db_user.id)
     ).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    artifacts = session.exec(select(ProjectArtifact).where(ProjectArtifact.project_id == project.id)).all()
-    if not artifacts:
-        raise HTTPException(status_code=404, detail="No artifacts found for this project")
+    # Find the pre-generated zip artifact in the database.
+    zip_artifact = session.exec(
+        select(ProjectArtifact).where(
+            ProjectArtifact.project_id == project.id,
+            ProjectArtifact.artifact_type == ArtifactType.DOWNLOADABLE_ZIP,
+        )
+    ).first()
 
-    # Build zip on disk to limit memory usage, then stream in chunks
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    tmp_path = tmp.name
-    tmp.close()
-    try:
-        with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for art in artifacts:
-                try:
-                    with storage.get_artifact(art.storage_key) as rf:
-                        # Write each artifact under a stable name
-                        arcname = f"{art.artifact_type.value.lower()}.png"
-                        # ZipFile.writestr accepts bytes; read in chunks to avoid loading entire file
-                        # Accumulate into a temporary file inside the zip API using writestr once
-                        data = rf.read()
-                        zf.writestr(arcname, data)
-                except FileNotFoundError:
-                    logging.warning("artifact_missing", extra={"project_id": project_id, "key": art.storage_key})
-                    continue
+    if not zip_artifact:
+        raise HTTPException(
+            status_code=404,
+            detail="Download package not found. It may still be generating.",
+        )
 
-        def file_iterator(path: str, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
-            with open(path, "rb") as f:
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    yield chunk
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+    # Generate a presigned URL for direct download from cloud storage.
+    download_url = storage.get_download_url(zip_artifact.storage_key)
 
-        filename = f"mangafuse_{project_id}.zip"
-        headers = {
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Cache-Control": "no-cache",
-        }
-        return StreamingResponse(file_iterator(tmp_path), media_type="application/zip", headers=headers)
-    except Exception:
-        # Ensure temp file is removed on failure
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        raise
+    # Redirect the client to the presigned URL.
+    return RedirectResponse(url=download_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
-# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard  
-
+# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard
 def _verify_clerk_webhook(request: Request, body: bytes) -> None:
     """Verify Clerk webhook using Svix headers when secret is configured.
 
@@ -462,7 +433,8 @@ def _verify_clerk_webhook(request: Request, body: bytes) -> None:
     except WebhookVerificationError:
         raise HTTPException(status_code=401, detail="invalid signature")
 
-# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard  
+
+# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard
 @router.post("/clerk/webhook", summary="Clerk user sync webhook", status_code=status.HTTP_200_OK)
 async def clerk_webhook(request: Request, session: Session = Depends(get_db_session)) -> Dict[str, str]:
     raw = await request.body()
