@@ -323,6 +323,15 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
                         logger.exception("failed_to_persist_editor_data_on_error", extra={"project_id": project_id})
 
                 session.add(project)
+
+                # Even if some bubbles failed, successful edits likely produced updated
+                # local artifacts (e.g., final.png, text_layer.png). Package a fresh zip
+                # so users can download the latest partial results.
+                try:
+                    storage = get_storage_service()
+                    _package_and_upload_zip(project_id, storage, session)
+                except Exception:
+                    logger.exception("zip_package_failed_on_error", extra={"project_id": project_id})
         logger.exception("retypeset_failed", extra={"project_id": project_id, "revision": revision})
         return
 
