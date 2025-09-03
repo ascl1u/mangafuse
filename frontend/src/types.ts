@@ -1,4 +1,4 @@
-export type ProjectStatus = 'PENDING' | 'PROCESSING' | 'TRANSLATING' | 'UPDATING' | 'COMPLETED' | 'FAILED'
+export type ProjectStatus = 'PENDING' | 'PROCESSING' | 'TRANSLATING' | 'TYPESETTING' | 'UPDATING' | 'COMPLETED' | 'FAILED'
 
 export type EditorBubble = {
 	id: number
@@ -34,6 +34,20 @@ export type PollPayload = {
 export type ExportPayload = {
 	final_url?: string
 	text_layer_url?: string
+}
+
+export type ProjectListItem = {
+	project_id: string
+	title: string
+	status: ProjectStatus
+	updated_at?: string
+}
+
+export type ProjectListResponse = {
+	items: ProjectListItem[]
+	page: number
+	limit: number
+	has_next: boolean
 }
 
 

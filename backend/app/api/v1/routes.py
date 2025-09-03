@@ -27,6 +27,49 @@ from app.core.gpu_client import GpuClient, get_gpu_client
 
 
 router = APIRouter(prefix="/api/v1")
+@router.get("/projects", summary="List current user's projects")
+def list_projects(
+    page: int = 1,
+    limit: int = 20,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+):
+    """Paginated list of the current user's projects, newest first.
+
+    Returns up to `limit` items and a boolean `has_next` indicating if there are more items.
+    """
+    # Sanitize inputs
+    page = max(1, int(page or 1))
+    limit = max(1, min(50, int(limit or 20)))
+    offset = (page - 1) * limit
+
+    db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    q = (
+        select(Project)
+        .where(Project.user_id == db_user.id)
+        .order_by(Project.updated_at.desc())
+        .limit(limit + 1)
+        .offset(offset)
+    )
+    rows = session.exec(q).all()
+    has_next = len(rows) > limit
+    items = rows[:limit]
+
+    resp_items = [
+        {
+            "project_id": str(p.id),
+            "title": p.title,
+            "status": p.status,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        }
+        for p in items
+    ]
+
+    return {"items": resp_items, "page": page, "limit": limit, "has_next": has_next}
+
 
 @router.get("/me", summary="Get current user")
 def who_am_i(user: AuthenticatedUser = Depends(get_current_user)) -> Dict[str, Any]:
@@ -225,7 +268,6 @@ def get_project(
         payload["editor_data"] = project.editor_data
 
     return payload
-
 
 @router.put("/projects/{project_id}", summary="Update project and re-typeset", status_code=status.HTTP_202_ACCEPTED)
 def update_project(

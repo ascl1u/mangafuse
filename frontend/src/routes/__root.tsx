@@ -19,6 +19,7 @@ function RootLayout() {
               <img src="/icons/discord.svg" alt="" aria-hidden="true" className="h-5 w-5" />
             </a>
             <Link to="/pricing" className="text-gray-600 [&.active]:font-semibold">Pricing</Link>
+            <Link to="/projects" className="text-gray-600 [&.active]:font-semibold">My Projects</Link>
             <SignedOut>
               <SignInButton />
               <SignUpButton />
@@ -29,12 +30,7 @@ function RootLayout() {
           </div>
         </div>
       </header>
-      <div className="w-full bg-white border-b">
-        <div className="mx-auto max-w-[1280px] px-6 h-10 flex items-center text-gray-500 gap-3">
-          <div className="px-3 py-1 rounded border bg-gray-100 opacity-60 cursor-not-allowed">Current job</div>
-          <button onClick={() => window.location.reload()} className="px-3 py-1.5 rounded bg-blue-600 text-white">New job</button>
-        </div>
-      </div>
+      {/* Removed secondary sub-header to simplify navigation */}
 
       <main className="mx-auto max-w-[1280px] px-6 py-6">
         <Outlet />

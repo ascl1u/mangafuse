@@ -1,4 +1,4 @@
-import type { PollPayload } from './types'
+import type { PollPayload, ProjectListResponse } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
@@ -55,8 +55,8 @@ export async function fetchProjectById(projectId: string, token?: string): Promi
       headers,
     })
     if (!resp.ok) {
-      // Consume body to free the connection before throwing
-      try { await resp.text() } catch {}
+      // Consume body to free the connection before throwing (ignore errors)
+      await resp.text().catch(() => undefined)
       throw new Error(`Failed to fetch project (${resp.status})`)
     }
     return resp.json()
@@ -129,5 +129,23 @@ export async function downloadZip(projectId: string, getToken: () => Promise<str
 	a.click()
 	a.remove()
 	URL.revokeObjectURL(url)
+}
+
+export async function listProjects(
+	getToken: () => Promise<string | null>,
+	page = 1,
+	limit = 20,
+): Promise<ProjectListResponse> {
+	const token = await getToken()
+	if (!token) throw new Error('Not authenticated')
+	const params = new URLSearchParams({ page: String(Math.max(1, page)), limit: String(Math.max(1, Math.min(50, limit))) })
+	const resp = await fetch(`${API_BASE}/api/v1/projects?${params.toString()}`, {
+		headers: { Authorization: `Bearer ${token}` },
+	})
+	if (!resp.ok) {
+		await resp.text().catch(() => undefined)
+		throw new Error(`Failed to list projects (${resp.status})`)
+	}
+	return resp.json()
 }
 
