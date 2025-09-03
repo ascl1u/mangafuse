@@ -21,8 +21,6 @@ from svix.webhooks import Webhook, WebhookVerificationError
 from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.core.storage import get_storage_service, StorageService
-from app.core.paths import get_job_dir
-from app.pipeline.orchestrator import apply_edits as orchestrator_apply_edits
 from app.worker.queue import get_default_queue, get_high_priority_queue
 from app.worker.tasks import process_translation, retypeset_after_edits
 from app.core.gpu_client import GpuClient, get_gpu_client
@@ -197,6 +195,27 @@ def get_project(
     payload: Dict[str, Any] = {"project_id": str(project.id), "status": project.status, "error": project.failure_reason}
     # Expose editor revision so the frontend can wait for a specific update
     payload["editor_data_rev"] = int(project.editor_data_rev or 0)
+
+    # Provide coarse progress and stage derived from status for a better UX
+    try:
+        status_val: ProjectStatus = project.status
+        stage_map = {
+            ProjectStatus.PENDING: ("pending", 0.0),
+            ProjectStatus.PROCESSING: ("processing", 0.3),
+            ProjectStatus.TRANSLATING: ("translating", 0.7),
+            ProjectStatus.TYPESETTING: ("typesetting", 0.9),
+            ProjectStatus.UPDATING: ("updating", 0.6),
+            ProjectStatus.COMPLETED: ("completed", 1.0),
+            ProjectStatus.FAILED: ("failed", 1.0),
+        }
+        stage, progress = stage_map.get(status_val, ("unknown", None))
+        if progress is not None:
+            payload["meta"] = {"stage": stage, "progress": float(progress)}
+        else:
+            payload["meta"] = {"stage": stage}
+    except Exception:
+        # Avoid breaking the endpoint if mapping fails for any reason
+        payload["meta"] = {"stage": "unknown"}
 
     if project.status in [ProjectStatus.COMPLETED, ProjectStatus.FAILED]:
         artifacts = session.exec(select(ProjectArtifact).where(ProjectArtifact.project_id == project.id)).all()

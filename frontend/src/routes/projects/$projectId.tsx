@@ -40,6 +40,7 @@ function ProjectPage() {
   const edits = useAppStore((s) => s.edits)
   const updateEdit = useAppStore((s) => s.updateEdit)
 
+  const [snapshot, setSnapshot] = useState<PollPayload>(data)
   const [editor, setEditor] = useState<EditorPayload | undefined>(() => seedEditorFromData(data))
   const [pendingEditIds, setPendingEditIds] = useState<number[]>([])
   const [updating, setUpdating] = useState(false)
@@ -50,6 +51,35 @@ function ProjectPage() {
   useEffect(() => {
     setEditor(seededFromLoader)
   }, [seededFromLoader])
+
+  // Auto-poll while non-terminal: refresh snapshot until COMPLETED or FAILED
+  useEffect(() => {
+    const terminal = snapshot?.status === 'COMPLETED' || snapshot?.status === 'FAILED'
+    if (terminal) return
+    let alive = true
+    const interval = window.setInterval(async () => {
+      try {
+        const token = await getToken()
+        const next = await fetchProjectById(projectId, token || undefined)
+        if (!alive) return
+        setSnapshot(next)
+      } catch {
+        // ignore transient errors; try again on next tick
+      }
+    }, 5000)
+    return () => {
+      alive = false
+      window.clearInterval(interval)
+    }
+  }, [projectId, getToken, snapshot?.status])
+
+  // When snapshot reaches COMPLETED with editor_data, hydrate editor state
+  useEffect(() => {
+    if (snapshot?.status === 'COMPLETED' && snapshot.editor_data) {
+      const seeded = seedEditorFromData(snapshot)
+      if (seeded) setEditor(seeded)
+    }
+  }, [snapshot])
 
   // Load saved edits for this project into the UI store
   useEffect(() => {
@@ -75,8 +105,8 @@ function ProjectPage() {
     }
   }, [projectId, edits])
 
-  const status = data?.status
-  const stage = data?.meta?.stage
+  const status = snapshot?.status
+  const stage = snapshot?.meta?.stage
 
   // Compute the text field values shown in the editor: user edit overrides payload
   const effectiveEditor = useMemo<EditorPayload | undefined>(() => {
@@ -128,10 +158,23 @@ function ProjectPage() {
   }
 
   if (status !== 'COMPLETED' || !effectiveEditor) {
+    const progress = typeof snapshot?.meta?.progress === 'number' ? Math.max(0, Math.min(1, snapshot.meta!.progress!)) : undefined
     return (
       <div className="max-w-2xl">
         <h1 className="text-xl font-semibold mb-3">Project {projectId}</h1>
         <div className="text-sm">Status: {status}{stage ? ` — ${stage}` : ''}</div>
+        {typeof progress === 'number' && (
+          <div className="mt-3">
+            <div className="w-full h-2 bg-gray-200 rounded" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} role="progressbar">
+              <div className="h-2 bg-blue-600 rounded" style={{ width: `${Math.round(progress * 100)}%` }} />
+            </div>
+          </div>
+        )}
+        {status === 'FAILED' && snapshot?.error && (
+          <div className="mt-3 p-3 rounded border border-red-200 bg-red-50 text-sm text-red-700">
+            <strong>Error:</strong> {snapshot.error}
+          </div>
+        )}
       </div>
     )
   }
