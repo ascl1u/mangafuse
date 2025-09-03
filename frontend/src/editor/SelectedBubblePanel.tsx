@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { EditorPayload } from '../store'
+import type { EditorPayload } from '../types'
 
 
 type Props = {

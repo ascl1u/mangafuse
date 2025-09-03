@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Stage, Layer, Image as KonvaImage, Group, Rect, Circle } from 'react-konva'
-import type { EditorPayload, EditorBubble } from '../store'
+import type { EditorPayload, EditorBubble } from '../types'
 
 type Props = {
   editor: EditorPayload
