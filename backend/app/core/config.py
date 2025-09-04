@@ -133,6 +133,34 @@ class Settings(BaseSettings):
         description="The provider of the GPU service, e.g. 'local' or 'modal'",
     )
 
+    # Stripe configuration
+    stripe_secret_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("STRIPE_SECRET_KEY"),
+        description="Stripe secret API key",
+    )
+    stripe_publishable_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("STRIPE_PUBLISHABLE_KEY"),
+        description="Stripe publishable key (frontend)",
+    )
+    stripe_api_version: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("STRIPE_API_VERSION"),
+        description="Pinned Stripe API version (e.g., '2025-06-30.basil')",
+    )
+    stripe_webhook_secret: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("STRIPE_WEBHOOK_SECRET"),
+        description="Stripe webhook signing secret",
+    )
+    # Price IDs: one paid tier for MVP
+    stripe_price_id_pro: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("STRIPE_PRICE_ID_PRO"),
+        description="Stripe Price ID for the Pro subscription tier",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

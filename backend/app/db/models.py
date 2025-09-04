@@ -110,10 +110,32 @@ class ProjectArtifact(SQLModel, table=True):
     )
 
 
+class Customer(SQLModel, table=True):
+    __tablename__ = "customers"
+
+    # One-to-one with users; user_id is the primary key to enforce uniqueness
+    user_id: uuid.UUID = Field(sa_column=sa.Column(PGUUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True))
+    stripe_customer_id: str = Field(sa_column=sa.Column(sa.String, unique=True, index=True, nullable=False))
+
+
+class Subscription(SQLModel, table=True):
+    __tablename__ = "subscriptions"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, sa_column=sa.Column(PGUUID(as_uuid=True), primary_key=True, nullable=False))
+    user_id: uuid.UUID = Field(sa_column=sa.Column(PGUUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True, nullable=False))
+    stripe_subscription_id: str = Field(sa_column=sa.Column(sa.String, unique=True, index=True, nullable=False))
+    plan_id: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe Price ID for paid plans; "free" for free tier
+    status: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe subscription status
+    current_period_end: datetime = Field(sa_column=sa.Column(sa.DateTime(timezone=True), nullable=False))
+    cancel_at_period_end: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.text("false")))
+
+
 __all__ = [
     "User",
     "Project",
     "ProjectArtifact",
     "ProjectStatus",
     "ArtifactType",
+    "Customer",
+    "Subscription",
 ]
