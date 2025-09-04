@@ -18,4 +18,5 @@ pillow
 opencv-python
 shapely
 google-genai
+stripe
 
