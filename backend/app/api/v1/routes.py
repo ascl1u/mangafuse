@@ -16,11 +16,12 @@ from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser, ClerkWebhoo
 from app.db.session import check_database_connection
 from app.db.deps import get_current_user, get_db_session
 from sqlmodel import Session, select
-from app.db.models import User, Project, ProjectArtifact, ArtifactType, ProjectStatus
+from app.db.models import User, Project, ProjectArtifact, ArtifactType, ProjectStatus, Customer
 from svix.webhooks import Webhook, WebhookVerificationError
 from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.core.storage import get_storage_service, StorageService
+import stripe
 from app.worker.queue import get_default_queue, get_high_priority_queue
 from app.worker.tasks import process_translation, retypeset_after_edits
 from app.core.gpu_client import GpuClient, get_gpu_client
@@ -532,7 +533,26 @@ async def clerk_webhook(request: Request, session: Session = Depends(get_db_sess
                     if not data.deleted:
                         if not primary_email:
                             raise HTTPException(status_code=400, detail="missing email")
-                        session.add(User(clerk_user_id=data.id, email=primary_email))
+                        # Create app user
+                        new_user = User(clerk_user_id=data.id, email=primary_email)
+                        session.add(new_user)
+                        session.flush() # Flush to get the new_user.id
+
+                        # Create Stripe Customer
+                        settings = get_settings()
+                        stripe.api_key = settings.stripe_secret_key
+                        customer_obj = stripe.Customer.create(
+                            email=primary_email,
+                            name=data.id,
+                            metadata={"clerk_user_id": data.id}
+                        )
+
+                        # Store the mapping in our DB
+                        local_customer = Customer(
+                            user_id=new_user.id,
+                            stripe_customer_id=customer_obj.id
+                        )
+                        session.add(local_customer)
         except IntegrityError:
             # Likely a unique constraint conflict on email; allow Clerk to retry or treat as idempotent
             raise HTTPException(status_code=409, detail="user conflict")

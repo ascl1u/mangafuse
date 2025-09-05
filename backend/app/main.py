@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from app.api.v1.routes import router as api_router
+from app.api.v1.billing import router as billing_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.paths import get_artifacts_root, get_assets_root
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router)
+    app.include_router(billing_router)
 
     settings = get_settings()
     # Serve artifacts/ only in development (local filesystem storage)
