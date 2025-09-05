@@ -28,6 +28,7 @@ from app.core.gpu_client import GpuClient, get_gpu_client
 
 
 router = APIRouter(prefix="/api/v1")
+logger = logging.getLogger(__name__)
 @router.get("/projects", summary="List current user's projects")
 def list_projects(
     page: int = 1,
@@ -519,6 +520,15 @@ async def clerk_webhook(request: Request, session: Session = Depends(get_db_sess
         primary_email = data.email_addresses[0].get("email_address")
 
     if event_type in {"user.created", "user.updated"}:
+        # Gracefully handle users without an email from social providers
+        if not primary_email:
+            logger.warning(
+                "clerk_user_skipped_no_email",
+                extra={"clerk_user_id": data.id, "event_type": event_type}
+            )
+            # Return 200 OK to acknowledge receipt and prevent Clerk from retrying.
+            return {"status": "ok, user skipped due to missing email"}
+
         try:
             with session.begin():
                 existing = session.exec(select(User).where(User.clerk_user_id == data.id)).first()
@@ -531,9 +541,7 @@ async def clerk_webhook(request: Request, session: Session = Depends(get_db_sess
                     session.add(existing)
                 else:
                     if not data.deleted:
-                        if not primary_email:
-                            raise HTTPException(status_code=400, detail="missing email")
-                        # Create app user
+                        # Logic to create user and Stripe customer now safely assumes primary_email exists
                         new_user = User(clerk_user_id=data.id, email=primary_email)
                         session.add(new_user)
                         session.flush() # Flush to get the new_user.id
