@@ -4,7 +4,6 @@ import json
 import hmac
 import hashlib
 import base64
-from pathlib import Path
 import logging
 
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Depends, Request
@@ -12,14 +11,11 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import attributes
 
 from app.core.config import get_settings
-from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser, ClerkWebhookEvent
+from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser
 from app.db.session import check_database_connection
 from app.db.deps import get_current_user, get_db_session
 from sqlmodel import Session, select
-from app.db.models import User, Project, ProjectArtifact, ArtifactType, ProjectStatus, Customer
-from svix.webhooks import Webhook, WebhookVerificationError
-from datetime import datetime, timezone
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, Customer
 from app.core.storage import get_storage_service, StorageService
 import stripe
 from app.worker.queue import get_default_queue, get_high_priority_queue
@@ -45,13 +41,9 @@ def list_projects(
     limit = max(1, min(50, int(limit or 20)))
     offset = (page - 1) * limit
 
-    db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
     q = (
         select(Project)
-        .where(Project.user_id == db_user.id)
+        .where(Project.user_id == user.clerk_user_id)
         .order_by(Project.updated_at.desc())
         .limit(limit + 1)
         .offset(offset)
@@ -133,10 +125,6 @@ async def create_project(
         contents = await file.read()
         storage_key = storage.save_artifact(project_id, filename, contents)
 
-    db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
-    if not db_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
     # Idempotency handling using Redis (via RQ queue connection)
     idemp_key = request.headers.get("X-Idempotency-Key")
     q = get_default_queue()
@@ -144,7 +132,7 @@ async def create_project(
     idemp_redis_key = None
     if idemp_key:
         # Namespace by user to avoid cross-user collisions
-        idemp_redis_key = f"idemp:create_project:{db_user.id}:{idemp_key}"
+        idemp_redis_key = f"idemp:create_project:{user.clerk_user_id}:{idemp_key}"
         cached = r.get(idemp_redis_key)
         if cached:
             try:
@@ -158,7 +146,7 @@ async def create_project(
 
         # If the project already exists, treat as idempotent success
         existing = session.exec(
-            select(Project).where(Project.id == project_id, Project.user_id == db_user.id)
+            select(Project).where(Project.id == project_id, Project.user_id == user.clerk_user_id)
         ).first()
         if existing:
             return {"project_id": str(existing.id)}
@@ -170,7 +158,7 @@ async def create_project(
             # Another identical request is in-flight; return a stable response without re-submitting
             return {"project_id": project_id}
 
-    project = Project(id=project_id, user_id=db_user.id, title=filename)
+    project = Project(id=project_id, user_id=user.clerk_user_id, title=filename)
     artifact = ProjectArtifact(project_id=project.id, artifact_type=ArtifactType.SOURCE_RAW, storage_key=storage_key)
     # Mark as processing immediately
     project.status = ProjectStatus.PROCESSING
@@ -228,11 +216,8 @@ def get_project(
     storage: StorageService = Depends(get_storage_service),
 ) -> Dict[str, Any]:
     """Get project status, and if complete, the artifact URLs."""
-    db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
     project = session.exec(
-        select(Project).where(Project.id == project_id, Project.user_id == db_user.id)
+        select(Project).where(Project.id == project_id, Project.user_id == user.clerk_user_id)
     ).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -280,11 +265,8 @@ def update_project(
     session: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
     """Atomically update project data and enqueue a re-typeset job."""
-    db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
     project = session.exec(
-        select(Project).where(Project.id == project_id, Project.user_id == db_user.id)
+        select(Project).where(Project.id == project_id, Project.user_id == user.clerk_user_id)
     ).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -444,12 +426,8 @@ def download_package(
     Returns a redirect to a presigned URL for the project's downloadable zip archive.
     The zip file is generated asynchronously by a background worker.
     """
-    db_user = session.exec(select(User).where(User.clerk_user_id == user.clerk_user_id)).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
     project = session.exec(
-        select(Project).where(Project.id == project_id, Project.user_id == db_user.id)
+        select(Project).where(Project.id == project_id, Project.user_id == user.clerk_user_id)
     ).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -475,105 +453,6 @@ def download_package(
     return RedirectResponse(url=download_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
-# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard
-def _verify_clerk_webhook(request: Request, body: bytes) -> None:
-    """Verify Clerk webhook using Svix headers when secret is configured.
-
-    If no secret configured, accept (useful for local dev).
-    """
-    settings = get_settings()
-    secret = settings.clerk_webhook_secret
-    if not secret:
-        return
-    svix_id = request.headers.get("svix-id")
-    svix_timestamp = request.headers.get("svix-timestamp")
-    svix_signature = request.headers.get("svix-signature")
-    if not (svix_id and svix_timestamp and svix_signature):
-        raise HTTPException(status_code=401, detail="missing svix headers")
-    headers = {"svix-id": svix_id, "svix-timestamp": svix_timestamp, "svix-signature": svix_signature}
-    try:
-        Webhook(secret).verify(body, headers)
-    except WebhookVerificationError:
-        raise HTTPException(status_code=401, detail="invalid signature")
-
-
-# TODO: This is a placeholder for the Clerk webhook. We need to implement the actual webhook from dashboard
-@router.post("/clerk/webhook", summary="Clerk user sync webhook", status_code=status.HTTP_200_OK)
-async def clerk_webhook(request: Request, session: Session = Depends(get_db_session)) -> Dict[str, str]:
-    raw = await request.body()
-    _verify_clerk_webhook(request, raw)
-    try:
-        payload = ClerkWebhookEvent.model_validate_json(raw)
-    except Exception:
-        raise HTTPException(status_code=400, detail="invalid payload")
-
-    event_type = payload.type
-    data = payload.data
-    primary_email: str | None = None
-    if data.primary_email_address_id and data.email_addresses:
-        for ent in data.email_addresses:
-            if ent.get("id") == data.primary_email_address_id:
-                primary_email = ent.get("email_address")
-                break
-    if not primary_email and data.email_addresses:
-        # Fallback to first email
-        primary_email = data.email_addresses[0].get("email_address")
-
-    if event_type in {"user.created", "user.updated"}:
-        # Gracefully handle users without an email from social providers
-        if not primary_email:
-            logger.warning(
-                "clerk_user_skipped_no_email",
-                extra={"clerk_user_id": data.id, "event_type": event_type}
-            )
-            # Return 200 OK to acknowledge receipt and prevent Clerk from retrying.
-            return {"status": "ok, user skipped due to missing email"}
-
-        try:
-            with session.begin():
-                existing = session.exec(select(User).where(User.clerk_user_id == data.id)).first()
-                if existing:
-                    if data.deleted:
-                        existing.deactivated_at = existing.deactivated_at or datetime.now(timezone.utc)
-                    else:
-                        if primary_email and existing.email != primary_email:
-                            existing.email = primary_email
-                    session.add(existing)
-                else:
-                    if not data.deleted:
-                        # Logic to create user and Stripe customer now safely assumes primary_email exists
-                        new_user = User(clerk_user_id=data.id, email=primary_email)
-                        session.add(new_user)
-                        session.flush() # Flush to get the new_user.id
-
-                        # Create Stripe Customer
-                        settings = get_settings()
-                        stripe.api_key = settings.stripe_secret_key
-                        customer_obj = stripe.Customer.create(
-                            email=primary_email,
-                            name=data.id,
-                            metadata={"clerk_user_id": data.id}
-                        )
-
-                        # Store the mapping in our DB
-                        local_customer = Customer(
-                            user_id=new_user.id,
-                            stripe_customer_id=customer_obj.id
-                        )
-                        session.add(local_customer)
-        except IntegrityError:
-            # Likely a unique constraint conflict on email; allow Clerk to retry or treat as idempotent
-            raise HTTPException(status_code=409, detail="user conflict")
-        except SQLAlchemyError:
-            raise HTTPException(status_code=503, detail="database unavailable")
-    elif event_type == "user.deleted":
-        try:
-            with session.begin():
-                existing = session.exec(select(User).where(User.clerk_user_id == data.id)).first()
-                if existing and not existing.deactivated_at:
-                    existing.deactivated_at = datetime.now(timezone.utc)
-                    session.add(existing)
-        except SQLAlchemyError:
-            raise HTTPException(status_code=503, detail="database unavailable")
-
-    return {"status": "ok"}
+# Clerk webhook removed - using Clerk Direct ID approach
+# User authentication happens directly via JWT validation
+# No webhook needed for user sync since clerk_user_id is used directly

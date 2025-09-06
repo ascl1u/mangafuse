@@ -20,16 +20,4 @@ class AuthenticatedUser(BaseModel):
     email: Optional[str] = None
 
 
-class ClerkWebhookUser(BaseModel):
-    id: str
-    email_addresses: List[dict]
-    primary_email_address_id: Optional[str] = None
-    deleted: Optional[bool] = None
-
-
-class ClerkWebhookEvent(BaseModel):
-    type: str
-    data: ClerkWebhookUser
-
-
 

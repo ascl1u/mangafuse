@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+from typing import Dict
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -7,12 +8,57 @@ from sqlmodel import Session, select
 
 from app.core.config import get_settings
 from app.db.deps import get_db_session
-from app.db.models import Customer, Subscription, User
+from app.db.models import Customer, Subscription
 from app.api.v1.schemas import AuthenticatedUser
 from app.db.deps import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/billing")
+
+def get_or_create_stripe_customer(session: Session, user: AuthenticatedUser) -> str:
+    """
+    Get existing Stripe customer or create one on-demand for Clerk Direct ID approach.
+    Returns the Stripe customer ID.
+    """
+    settings = get_settings()
+    stripe.api_key = settings.stripe_secret_key
+
+    # Check if customer already exists in our database
+    existing_customer = session.exec(
+        select(Customer).where(Customer.user_id == user.clerk_user_id)
+    ).first()
+
+    if existing_customer:
+        return existing_customer.stripe_customer_id
+
+    # Create Stripe customer on-demand
+    try:
+        customer_obj = stripe.Customer.create(
+            email=user.email,
+            name=user.clerk_user_id,
+            metadata={"clerk_user_id": user.clerk_user_id}
+        )
+
+        # Store the mapping in our database
+        local_customer = Customer(
+            user_id=user.clerk_user_id,
+            stripe_customer_id=customer_obj.id
+        )
+        session.add(local_customer)
+        session.commit()
+
+        logger.info(
+            "stripe_customer_created",
+            extra={"clerk_user_id": user.clerk_user_id, "stripe_customer_id": customer_obj.id}
+        )
+
+        return customer_obj.id
+    except Exception as e:
+        logger.error(
+            "stripe_customer_creation_failed",
+            extra={"clerk_user_id": user.clerk_user_id, "error": str(e)}
+        )
+        raise HTTPException(status_code=503, detail="Failed to create billing customer")
 
 def sync_stripe_data(session: Session, stripe_customer_id: str):
     """
@@ -80,3 +126,16 @@ async def stripe_webhook(request: Request, session: Session = Depends(get_db_ses
             sync_stripe_data(session, customer_id)
             
     return {"status": "ok"}
+
+
+@router.get("/customer", summary="Get or create Stripe customer for current user")
+def get_customer(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> Dict[str, str]:
+    """
+    Get existing Stripe customer or create one on-demand for Clerk Direct ID approach.
+    This demonstrates on-demand customer creation when user interacts with billing features.
+    """
+    stripe_customer_id = get_or_create_stripe_customer(session, user)
+    return {"stripe_customer_id": stripe_customer_id}

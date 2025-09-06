@@ -47,11 +47,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CLERK_JWKS_URL"),
         description="Override JWKS URL. If not provided, derived as {issuer}/.well-known/jwks.json",
     )
-    clerk_webhook_secret: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("CLERK_WEBHOOK_SECRET"),
-        description="Secret used to verify Clerk webhooks (svix)",
-    )
     clerk_secret_key: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("CLERK_SECRET_KEY"),

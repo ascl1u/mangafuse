@@ -7,7 +7,6 @@ sqlmodel
 alembic
 psycopg
 psycopg[binary]
-svix
 clerk_backend_api
 boto3
 httpx

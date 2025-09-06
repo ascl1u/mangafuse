@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import HTTPException, status, Request
 from typing import Optional
 from functools import lru_cache
 from app.core.config import get_settings
 from app.api.v1.schemas import AuthenticatedUser
-from app.db.models import User
 from clerk_backend_api import Clerk
 from clerk_backend_api import AuthenticateRequestOptions, RequestState
 
@@ -31,9 +30,19 @@ def _get_clerk_client() -> Clerk:
     return Clerk(bearer_auth=settings.clerk_secret_key)
 
 
-def get_current_user(request: Request, session: Session = Depends(get_db_session)) -> AuthenticatedUser:
-    """Validate a Clerk-issued JWT from the Authorization header and return the user."""
+def get_current_user(request: Request) -> AuthenticatedUser:
+    """Validate a Clerk-issued JWT from the Authorization header and return the user.
+
+    Uses Clerk Direct ID approach - no database lookup required.
+    """
     settings = get_settings()
+
+    # Local development: allow mock authentication
+    if settings.app_env == "development" and request.headers.get("X-Mock-Auth"):
+        mock_user_id = request.headers.get("X-Mock-User-ID", "user_test_123")
+        mock_email = request.headers.get("X-Mock-Email", "test@example.com")
+        return AuthenticatedUser(clerk_user_id=mock_user_id, email=mock_email)
+
     clerk = _get_clerk_client()
     try:
         request_state: RequestState = clerk.authenticate_request(
@@ -51,9 +60,7 @@ def get_current_user(request: Request, session: Session = Depends(get_db_session
     if not clerk_user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token missing user id")
 
-    user = session.exec(select(User).where(User.clerk_user_id == clerk_user_id)).first()
+    # Extract email from JWT claims instead of database lookup
+    email: Optional[str] = claims.get("email")
 
-    if not user:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user not provisioned")
-
-    return AuthenticatedUser(clerk_user_id=clerk_user_id, email=user.email)
+    return AuthenticatedUser(clerk_user_id=clerk_user_id, email=email)
