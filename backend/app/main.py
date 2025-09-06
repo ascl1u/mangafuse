@@ -39,21 +39,38 @@ async def lifespan(app: FastAPI):  # noqa: D401 - FastAPI lifespan signature
 def create_app() -> FastAPI:
     app = FastAPI(title="MangaFuse API", version="0.1.0", lifespan=lifespan)
 
-    # CORS for local development and future frontend
+    # Log CORS configuration on startup
+    logging.getLogger(__name__).info(
+        "CORS configured",
+        extra={
+            "allow_origins": [
+                "http://localhost:5173",
+                "https://mangafuse.com",
+                "https://www.mangafuse.com",
+            ]
+        }
+    )
+
+    # CORS for local development and production frontend
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
-            "http://localhost:5173",
-            "https://mangafuse.com",
-            "https://www.mangafuse.com",
+            "http://localhost:5173",          # Local development
+            "https://mangafuse.com",          # Production domain
+            "https://www.mangafuse.com",      # WWW subdomain
         ],
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
     app.include_router(api_router)
     app.include_router(billing_router)
+
+    # CORS debug endpoint
+    @app.get("/cors-test")
+    def cors_test():
+        return {"message": "CORS is working!", "origin": "allowed"}
 
     settings = get_settings()
     # Serve artifacts/ only in development (local filesystem storage)
