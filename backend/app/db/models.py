@@ -28,34 +28,8 @@ class ArtifactType(str, Enum):
     DOWNLOADABLE_ZIP = "DOWNLOADABLE_ZIP"
 
 
-class User(SQLModel, table=True):
-    __tablename__ = "users"
-
-    id: uuid.UUID = Field(
-        default_factory=uuid.uuid4,
-        sa_column=sa.Column(PGUUID(as_uuid=True), primary_key=True, nullable=False),
-    )
-    clerk_user_id: str = Field(sa_column=sa.Column(sa.String(length=191), unique=True, index=True, nullable=False))
-    email: str = Field(sa_column=sa.Column(sa.String(length=320), unique=True, index=True, nullable=False))
-    deactivated_at: Optional[datetime] = Field(
-        default=None,
-        sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True),
-    )
-    created_at: datetime = Field(
-        sa_column=sa.Column(
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.func.now(),
-        )
-    )
-    updated_at: datetime = Field(
-        sa_column=sa.Column(
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.func.now(),
-            onupdate=sa.func.now(),
-        )
-    )
+# User model removed - using Clerk Direct ID approach
+# clerk_user_id is used directly as user identifier throughout the application
 
 
 class Project(SQLModel, table=True):
@@ -65,7 +39,7 @@ class Project(SQLModel, table=True):
         default_factory=uuid.uuid4,
         sa_column=sa.Column(PGUUID(as_uuid=True), primary_key=True, nullable=False),
     )
-    user_id: uuid.UUID = Field(sa_column=sa.Column(PGUUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False))
+    user_id: str = Field(sa_column=sa.Column(sa.String(length=191), index=True, nullable=False))  # Clerk user ID
     title: str = Field(sa_column=sa.Column(sa.String(length=255), nullable=False))
     status: ProjectStatus = Field(
         sa_column=sa.Column(sa.Enum(ProjectStatus, name="project_status_enum"), nullable=False, index=True),
@@ -113,8 +87,8 @@ class ProjectArtifact(SQLModel, table=True):
 class Customer(SQLModel, table=True):
     __tablename__ = "customers"
 
-    # One-to-one with users; user_id is the primary key to enforce uniqueness
-    user_id: uuid.UUID = Field(sa_column=sa.Column(PGUUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True))
+    # One-to-one with Clerk users; user_id (clerk_user_id) is the primary key to enforce uniqueness
+    user_id: str = Field(sa_column=sa.Column(sa.String(length=191), primary_key=True))  # Clerk user ID
     stripe_customer_id: str = Field(sa_column=sa.Column(sa.String, unique=True, index=True, nullable=False))
 
 
@@ -122,7 +96,7 @@ class Subscription(SQLModel, table=True):
     __tablename__ = "subscriptions"
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, sa_column=sa.Column(PGUUID(as_uuid=True), primary_key=True, nullable=False))
-    user_id: uuid.UUID = Field(sa_column=sa.Column(PGUUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True, nullable=False))
+    user_id: str = Field(sa_column=sa.Column(sa.String(length=191), unique=True, index=True, nullable=False))  # Clerk user ID
     stripe_subscription_id: str = Field(sa_column=sa.Column(sa.String, unique=True, index=True, nullable=False))
     plan_id: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe Price ID for paid plans; "free" for free tier
     status: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe subscription status
@@ -131,7 +105,6 @@ class Subscription(SQLModel, table=True):
 
 
 __all__ = [
-    "User",
     "Project",
     "ProjectArtifact",
     "ProjectStatus",

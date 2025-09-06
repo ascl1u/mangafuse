@@ -1,5 +1,4 @@
 from .models import (
-    User,
     Project,
     ProjectArtifact,
     ProjectStatus,
@@ -7,7 +6,6 @@ from .models import (
 )
 
 __all__ = [
-    "User",
     "Project",
     "ProjectArtifact",
     "ProjectStatus",
