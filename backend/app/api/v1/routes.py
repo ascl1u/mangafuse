@@ -13,9 +13,9 @@ from sqlalchemy.orm import attributes
 from app.core.config import get_settings
 from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser
 from app.db.session import check_database_connection
-from app.db.deps import get_current_user, get_db_session
+from app.db.deps import get_current_user, get_db_session, get_current_subscription
 from sqlmodel import Session, select
-from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, Customer
+from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, Customer, Subscription
 from app.core.storage import get_storage_service, StorageService
 import stripe
 from app.worker.queue import get_default_queue, get_high_priority_queue
@@ -114,11 +114,41 @@ async def create_project(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
+    subscription: Subscription | None = Depends(get_current_subscription),
     gpu_client: GpuClient = Depends(get_gpu_client),
     storage: StorageService = Depends(get_storage_service),
     file: UploadFile | None = File(None),
 ) -> Dict[str, str]:
     """Create a project record and submit GPU job. Returns immediately with 202."""
+
+    # Enforce usage limits based on subscription status
+    from sqlalchemy import func
+    from datetime import datetime, timezone
+
+    is_pro = subscription and subscription.status in ("active", "trialing")
+    now = datetime.now(timezone.utc)
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    project_count = session.exec(
+        select(func.count(Project.id))
+        .where(Project.user_id == user.clerk_user_id)
+        .where(Project.created_at >= start_of_month)
+    ).one()
+
+    # Set limits based on subscription status
+    if is_pro:
+        limit = 300  # Pro tier monthly limit
+        tier_name = "Pro"
+    else:
+        limit = 5    # Free tier monthly limit
+        tier_name = "free"
+
+    if project_count >= limit:
+        if is_pro:
+            raise HTTPException(status_code=402, detail=f"Monthly Pro project limit ({limit}) reached. Please contact support to increase your limit.")
+        else:
+            raise HTTPException(status_code=402, detail=f"Monthly {tier_name} project limit ({limit}) reached. Please upgrade to Pro for higher limits.")
+
     # In local dev, a file may be uploaded directly to this endpoint.
     # If so, we save it to the shared artifacts volume.
     if get_settings().app_env == "development" and file:

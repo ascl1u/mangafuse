@@ -149,3 +149,38 @@ export async function listProjects(
 	return resp.json()
 }
 
+export async function createCheckoutSession(getToken: () => Promise<string | null>): Promise<{ url: string }> {
+	const token = await getToken()
+	if (!token) throw new Error('Not authenticated')
+	const resp = await fetch(`${API_BASE}/api/v1/billing/create-checkout-session`, {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${token}` },
+	})
+	if (!resp.ok) throw new Error('Failed to create checkout session')
+	return resp.json()
+}
+
+export async function createPortalSession(getToken: () => Promise<string | null>): Promise<{ url: string }> {
+	const token = await getToken()
+	if (!token) throw new Error('Not authenticated')
+	const resp = await fetch(`${API_BASE}/api/v1/billing/create-portal-session`, {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${token}` },
+	})
+	if (!resp.ok) throw new Error('Failed to create portal session')
+	return resp.json()
+}
+
+export async function syncSubscription(getToken: () => Promise<string | null>): Promise<void> {
+	const token = await getToken()
+	if (!token) throw new Error('Not authenticated')
+	const resp = await fetch(`${API_BASE}/api/v1/billing/sync-subscription`, {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${token}` },
+	})
+	if (!resp.ok) {
+		const errorData = await resp.json().catch(() => ({ detail: 'Failed to sync subscription' }))
+		throw new Error(errorData.detail)
+	}
+}
+

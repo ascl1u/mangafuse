@@ -122,6 +122,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PUBLIC_BACKEND_BASE_URL"),
         description="Publicly reachable base URL for backend callbacks (e.g., https://api.example.com)",
     )
+    public_frontend_base_url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("PUBLIC_FRONTEND_BASE_URL"),
+        description="Publicly reachable base URL for frontend redirects (e.g., https://app.example.com)",
+    )
     gpu_service_provider: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("GPU_SERVICE_PROVIDER"),
@@ -140,7 +145,7 @@ class Settings(BaseSettings):
         description="Stripe publishable key (frontend)",
     )
     stripe_api_version: Optional[str] = Field(
-        default=None,
+        default="2024-06-20",
         validation_alias=AliasChoices("STRIPE_API_VERSION"),
         description="Pinned Stripe API version (e.g., '2025-06-30.basil')",
     )

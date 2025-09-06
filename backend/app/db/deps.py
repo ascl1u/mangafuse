@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from fastapi import HTTPException, status, Request
+from fastapi import HTTPException, status, Request, Depends
 from typing import Optional
 from functools import lru_cache
 from app.core.config import get_settings
 from app.api.v1.schemas import AuthenticatedUser
 from clerk_backend_api import Clerk
 from clerk_backend_api import AuthenticateRequestOptions, RequestState
+from app.db.models import Subscription
 
 
 def get_db_session(request: Request) -> Generator[Session, None, None]:
@@ -64,3 +65,17 @@ def get_current_user(request: Request) -> AuthenticatedUser:
     email: Optional[str] = claims.get("email")
 
     return AuthenticatedUser(clerk_user_id=clerk_user_id, email=email)
+
+
+def get_current_subscription(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: Session = Depends(get_db_session)
+) -> Subscription | None:
+    """
+    Retrieves the current user's subscription record directly using their clerk_user_id.
+    Returns None if no subscription exists (free tier).
+    """
+    subscription = session.exec(
+        select(Subscription).where(Subscription.user_id == user.clerk_user_id)
+    ).first()
+    return subscription
