@@ -1,19 +1,32 @@
 import logging
 from datetime import datetime, timezone
-from typing import Dict
+from typing import Dict, Any
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func
 
 from app.core.config import get_settings
 from app.db.deps import get_db_session
-from app.db.models import Customer, Subscription
+from app.db.models import Customer, Subscription, Project
 from app.api.v1.schemas import AuthenticatedUser
 from app.db.deps import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/billing")
+
+def get_project_count_current_month(session: Session, user_id: str) -> int:
+    """Counts projects created by a user in the current calendar month (UTC)."""
+    # Get the first day of the current month in UTC
+    start_of_month = func.date_trunc('month', func.now())
+
+    statement = (
+        select(func.count(Project.id))
+        .where(Project.user_id == user_id)
+        .where(Project.created_at >= start_of_month)
+    )
+    count = session.exec(statement).one()
+    return int(count)
 
 
 def get_stripe_client():
@@ -178,7 +191,7 @@ def get_customer(
     Get existing Stripe customer or create one on-demand for Clerk Direct ID approach.
     This demonstrates on-demand customer creation when user interacts with billing features.
     """
-    stripe_customer_id = get_or_create_stripe_customer(session, user)
+    stripe_customer_id = get_or_create_stripe_customer(session, user, stripe_client)
     return {"stripe_customer_id": stripe_customer_id}
 
 
@@ -290,3 +303,30 @@ def sync_user_subscription(
             }
         )
         raise HTTPException(status_code=500, detail="Failed to sync subscription")
+
+
+@router.get("/status", summary="Get current subscription and usage status")
+def get_subscription_status(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """
+    Fetches the user's subscription status and current monthly project usage.
+    """
+    settings = get_settings()
+    subscription = session.exec(
+        select(Subscription).where(Subscription.user_id == user.clerk_user_id)
+    ).first()
+
+    project_count = get_project_count_current_month(session, user.clerk_user_id)
+    current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
+
+    plan_limit = settings.plan_limits.get(current_plan_id, 0)
+
+    return {
+        "plan_id": current_plan_id,
+        "status": subscription.status if subscription else "active",
+        "period_end": subscription.current_period_end if subscription else None,
+        "project_count": project_count,
+        "project_limit": plan_limit,
+    }

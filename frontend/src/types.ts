@@ -50,4 +50,10 @@ export type ProjectListResponse = {
 	has_next: boolean
 }
 
-
+export type BillingStatus = {
+	plan_id: string
+	status: string
+	period_end: string | null
+	project_count: number
+	project_limit: number
+}

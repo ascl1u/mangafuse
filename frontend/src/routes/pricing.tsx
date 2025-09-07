@@ -1,7 +1,50 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useAuth } from '@clerk/clerk-react'
-import { useState } from 'react'
-import { createCheckoutSession, createPortalSession } from '../api'
+import { useEffect, useState } from 'react'
+import { createCheckoutSession, createPortalSession, fetchBillingStatus } from '../api'
+import type { BillingStatus } from '../types'
+
+function UsageBanner() {
+	const { getToken, isSignedIn } = useAuth()
+	const [status, setStatus] = useState<BillingStatus | null>(null)
+	const [error, setError] = useState<string | null>(null)
+
+	useEffect(() => {
+		if (!isSignedIn) return;
+
+		async function loadStatus() {
+			try {
+				const data = await fetchBillingStatus(getToken)
+				setStatus(data)
+			} catch (err) {
+				setError(err instanceof Error ? err.message : 'Could not load usage status')
+			}
+		}
+		loadStatus()
+	}, [getToken, isSignedIn])
+
+    // Don't render anything for signed-out users
+	if (!isSignedIn) {
+		return null;
+	}
+
+	if (error) {
+		return <div className="p-3 mb-4 text-sm bg-red-50 text-red-700 rounded border border-red-200">{error}</div>
+	}
+
+	if (!status) {
+		return <div className="p-3 mb-4 text-sm bg-gray-100 rounded border animate-pulse">Loading usage...</div>
+	}
+
+	const planName = status.plan_id === 'free' ? 'Free Plan' : 'Pro Plan'
+
+	return (
+		<div className="p-3 mb-4 text-sm bg-blue-50 text-blue-800 rounded border border-blue-200">
+			You are on the <strong>{planName}</strong>. You have used {status.project_count} of your {status.project_limit}{' '}
+			monthly projects.
+		</div>
+	)
+}
 
 function PricingPage() {
   const { getToken } = useAuth()
@@ -31,6 +74,7 @@ function PricingPage() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
+			<UsageBanner />
       <h1 className="text-3xl font-bold text-center">Pricing Plans</h1>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-lg border">

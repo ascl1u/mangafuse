@@ -1,4 +1,4 @@
-import type { PollPayload, ProjectListResponse } from './types'
+import type { PollPayload, ProjectListResponse, BillingStatus } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
@@ -38,6 +38,12 @@ export async function uploadAndStart(file: File, getToken: () => Promise<string 
 		`${API_BASE}/api/v1/projects?project_id=${projectId}&filename=${encodeURIComponent(file.name)}&storage_key=${storageKey}`,
 		{ method: 'POST', headers: { ...headers, 'X-Idempotency-Key': idempotencyKey } },
 	)
+
+	if (createProjectResp.status === 429 || createProjectResp.status === 403) {
+		const errorData = await createProjectResp.json();
+		throw new Error(errorData.detail || 'You have reached your project limit.');
+	}
+
 	if (!createProjectResp.ok) throw new Error('Failed to create project')
 	const { task_id: taskId } = await createProjectResp.json()
 
@@ -184,3 +190,15 @@ export async function syncSubscription(getToken: () => Promise<string | null>): 
 	}
 }
 
+
+export async function fetchBillingStatus(getToken: () => Promise<string | null>): Promise<BillingStatus> {
+	const token = await getToken()
+	if (!token) throw new Error('Not authenticated')
+	const headers = { Authorization: `Bearer ${token}` }
+
+	const resp = await fetch(`${API_BASE}/api/v1/billing/status`, { headers })
+	if (!resp.ok) {
+		throw new Error(`Failed to fetch billing status (${resp.status})`)
+	}
+	return resp.json()
+}

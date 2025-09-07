@@ -161,6 +161,17 @@ class Settings(BaseSettings):
         description="Stripe Price ID for the Pro subscription tier",
     )
 
+    free_plan_limit: int = Field(
+        default=5,
+        validation_alias=AliasChoices("FREE_PLAN_LIMIT"),
+        description="Monthly project limit for the free plan.",
+    )
+    pro_plan_limit: int = Field(
+        default=200,
+        validation_alias=AliasChoices("PRO_PLAN_LIMIT"),
+        description="Monthly project limit for the pro plan.",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -178,6 +189,16 @@ class Settings(BaseSettings):
         if not self.r2_account_id:
             return None
         return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+
+    # === START: NEW PROPERTY FOR PLAN LIMITS ===
+    @property
+    def plan_limits(self) -> dict[str, int]:
+        """Constructs a mapping from plan ID to project limit."""
+        limits = {"free": self.free_plan_limit}
+        if self.stripe_price_id_pro:
+            limits[self.stripe_price_id_pro] = self.pro_plan_limit
+        return limits
+    # === END: NEW PROPERTY FOR PLAN LIMITS ===
 
 
 @lru_cache(maxsize=1)

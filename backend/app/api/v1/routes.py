@@ -121,33 +121,20 @@ async def create_project(
 ) -> Dict[str, str]:
     """Create a project record and submit GPU job. Returns immediately with 202."""
 
-    # Enforce usage limits based on subscription status
-    from sqlalchemy import func
-    from datetime import datetime, timezone
+    from app.api.v1.billing import get_project_count_current_month
 
-    is_pro = subscription and subscription.status in ("active", "trialing")
-    now = datetime.now(timezone.utc)
-    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    settings = get_settings()
 
-    project_count = session.exec(
-        select(func.count(Project.id))
-        .where(Project.user_id == user.clerk_user_id)
-        .where(Project.created_at >= start_of_month)
-    ).one()
+    current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
+    limit = settings.plan_limits.get(current_plan_id, 0)
 
-    # Set limits based on subscription status
-    if is_pro:
-        limit = 300  # Pro tier monthly limit
-        tier_name = "Pro"
-    else:
-        limit = 5    # Free tier monthly limit
-        tier_name = "free"
+    count = get_project_count_current_month(session, user.clerk_user_id)
 
-    if project_count >= limit:
-        if is_pro:
-            raise HTTPException(status_code=402, detail=f"Monthly Pro project limit ({limit}) reached. Please contact support to increase your limit.")
-        else:
-            raise HTTPException(status_code=402, detail=f"Monthly {tier_name} project limit ({limit}) reached. Please upgrade to Pro for higher limits.")
+    if count >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"You have reached your monthly project limit of {limit}.",
+        )
 
     # In local dev, a file may be uploaded directly to this endpoint.
     # If so, we save it to the shared artifacts volume.
