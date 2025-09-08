@@ -25,6 +25,7 @@ export type PollPayload = {
 	task_state?: string
 	meta?: { stage?: string; progress?: number }
 	error?: string
+	completion_warnings?: string
 	editor_data_rev?: number
 	artifacts?: { [key: string]: string }
 	editor_data?: EditorPayload

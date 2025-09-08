@@ -79,9 +79,11 @@ function ProjectPage() {
       const seeded = seedEditorFromData(snapshot)
       if (seeded) setEditor(seeded)
     }
-    // Check for errors regardless of project status
+    // Check for errors and warnings regardless of project status
     if (snapshot?.error) {
       setProjectError(snapshot.error)
+    } else if (snapshot?.completion_warnings) {
+      setProjectError(snapshot.completion_warnings)
     }
   }, [snapshot])
 

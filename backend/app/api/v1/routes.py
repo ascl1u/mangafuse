@@ -239,7 +239,12 @@ def get_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    payload: Dict[str, Any] = {"project_id": str(project.id), "status": project.status, "error": project.failure_reason}
+    payload: Dict[str, Any] = {
+        "project_id": str(project.id),
+        "status": project.status,
+        "error": project.failure_reason,
+        "completion_warnings": project.completion_warnings
+    }
     # Expose editor revision so the frontend can wait for a specific update
     payload["editor_data_rev"] = int(project.editor_data_rev or 0)
 

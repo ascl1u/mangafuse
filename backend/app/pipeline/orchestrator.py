@@ -628,6 +628,8 @@ def apply_edits(
         "final_url": f"/artifacts/jobs/{job_id}/final.png" if final_path.exists() else None,
         "text_layer_url": f"/artifacts/jobs/{job_id}/text_layer.png" if text_layer_path.exists() else None,
         "editor_payload_url": f"/artifacts/jobs/{job_id}/editor_payload.json" if editor_payload_path.exists() else None,
+        "had_typesetting_errors": len(errors) > 0,
+        "typesetting_error_count": len(errors),
     }
     if artifacts:
         result["artifacts"] = artifacts

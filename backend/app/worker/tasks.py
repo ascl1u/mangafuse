@@ -192,8 +192,8 @@ def process_translation(project_id: str, artifacts: Dict[str, str] | None = None
         with worker_session_scope() as session:
             project = session.get(Project, project_id)
             if project:
-                # Set global error message
-                project.failure_reason = "Automated translation service failed. Please add text manually."
+                # Set completion warning for translation issues
+                project.completion_warnings = "Automated translation service failed. Please add text manually."
 
                 # Set per-bubble errors for bubbles that were intended for translation
                 data = read_text_json(json_path)
@@ -235,6 +235,18 @@ def process_initial_typeset(project_id: str) -> None:
     job_dir = get_job_dir(project_id)
     try:
         result = orchestrator_apply_edits(job_dir)
+
+        # Check for typesetting errors and set completion warnings if needed
+        if result.get("had_typesetting_errors", False):
+            error_count = result.get("typesetting_error_count", 0)
+            with worker_session_scope() as session:
+                project = session.get(Project, project_id)
+                if project:
+                    if error_count == 1:
+                        project.completion_warnings = "Text in 1 bubble could not fit properly. You can edit the text manually in the editor."
+                    else:
+                        project.completion_warnings = f"Text in {error_count} bubbles could not fit properly. You can edit the text manually in the editor."
+                    session.add(project)
     except Exception as exc:
         # Mark project failed with a clear reason and stop
         with worker_session_scope() as session:
@@ -335,6 +347,18 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
     try:
         # Pass the edited_bubble_ids to the orchestrator for partial re-rendering.
         result = orchestrator_apply_edits(job_dir, edited_bubble_ids=edited_bubble_ids)
+
+        # Check for typesetting errors and set completion warnings if needed
+        if result.get("had_typesetting_errors", False):
+            error_count = result.get("typesetting_error_count", 0)
+            with worker_session_scope() as session:
+                project = session.get(Project, project_id)
+                if project:
+                    if error_count == 1:
+                        project.completion_warnings = "Text in 1 bubble could not fit properly. You can edit the text manually in the editor."
+                    else:
+                        project.completion_warnings = f"Text in {error_count} bubbles could not fit properly. You can edit the text manually in the editor."
+                    session.add(project)
     except Exception as exc:
         with worker_session_scope() as session:
             project = session.get(Project, project_id)

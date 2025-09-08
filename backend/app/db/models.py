@@ -48,11 +48,13 @@ class Project(SQLModel, table=True):
     editor_data: Optional[dict] = Field(default=None, sa_column=sa.Column(JSONB, nullable=True))
     editor_data_rev: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
     failure_reason: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
+    completion_warnings: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
     created_at: datetime = Field(
         sa_column=sa.Column(
             sa.DateTime(timezone=True),
             nullable=False,
             server_default=sa.func.now(),
+            index=True,
         )
     )
     updated_at: datetime = Field(
