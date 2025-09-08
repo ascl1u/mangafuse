@@ -12,6 +12,8 @@ type UIStoreState = {
 
   edits: EditsMap
   updateEdit: (id: number, patch: { en_text?: string }) => void
+
+  resetProjectState: () => void
 }
 
 export const useAppStore = create<UIStoreState>((set, get) => ({
@@ -25,4 +27,6 @@ export const useAppStore = create<UIStoreState>((set, get) => ({
   updateEdit: (id, patch) => {
     set({ edits: { ...get().edits, [id]: { ...get().edits[id], ...patch } } })
   },
+
+  resetProjectState: () => set({ selectedBubbleId: undefined, edits: {} }),
 }))

@@ -39,6 +39,7 @@ function ProjectPage() {
   const setSelectedBubbleId = useAppStore((s) => s.setSelectedBubbleId)
   const edits = useAppStore((s) => s.edits)
   const updateEdit = useAppStore((s) => s.updateEdit)
+  const resetProjectState = useAppStore((s) => s.resetProjectState)
 
   const [snapshot, setSnapshot] = useState<PollPayload>(data)
   const [editor, setEditor] = useState<EditorPayload | undefined>(() => seedEditorFromData(data))
@@ -111,6 +112,11 @@ function ProjectPage() {
     }
   }, [projectId, edits])
 
+  // Reset project-specific state when navigating to a different project
+  useEffect(() => {
+    resetProjectState()
+  }, [projectId, resetProjectState])
+
   const status = snapshot?.status
   const stage = snapshot?.meta?.stage
 
@@ -126,7 +132,6 @@ function ProjectPage() {
 
   async function onApplyEdits() {
     if (!editor) return
-    setProjectError(undefined)
     const diffs = Object.entries(edits)
       .map(([idStr, patch]) => ({ id: Number(idStr), en_text: patch.en_text }))
       .filter(({ id, en_text }) => {
@@ -140,10 +145,16 @@ function ProjectPage() {
     setUpdating(true)
     try {
       const next = await applyEditsAndWaitForRev(projectId, diffs, data?.editor_data_rev ?? 0, getToken)
+      // Update error state based on API response, prioritizing errors over warnings
       if (next.status === 'FAILED') {
         const apiError = next.error || 'Edit failed'
-        const userFriendly = apiError.includes('typeset_failed') ? 'Text is too long to fit in the errored bubbles.' : apiError
-        setProjectError(userFriendly)
+        setProjectError(apiError)
+      } else if (next.completion_warnings) {
+        // If the operation succeeded but has warnings, display them
+        setProjectError(next.completion_warnings)
+      } else {
+        // If the operation succeeded and there are no warnings, clear any previous error
+        setProjectError(undefined)
       }
       const seeded = seedEditorFromData(next)
       if (seeded) setEditor(seeded)
