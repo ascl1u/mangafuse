@@ -236,7 +236,7 @@ function ProjectPage() {
           />
         </div>
       </div>
-      <div className="bg-white p-2 rounded border">
+      <div className="bg-white p-2 rounded border min-w-0">
         <EditorCanvas
           editor={effectiveEditor}
           selectedId={selectedBubbleId}

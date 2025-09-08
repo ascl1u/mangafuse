@@ -83,8 +83,7 @@ function PricingPage() {
           <div className="text-3xl font-bold my-4">$0 <span className="text-lg font-normal">/ month</span></div>
           <ul className="space-y-2 text-sm text-gray-700">
             <li>✅ 5 Projects / month</li>
-            <li>✅ Basic AI models</li>
-            <li>✅ Community support</li>
+            <li>✅ Basic support</li>
           </ul>
         </div>
 
@@ -93,8 +92,8 @@ function PricingPage() {
           <p className="text-blue-600 mt-2">For serious creators</p>
           <div className="text-3xl font-bold my-4">$10 <span className="text-lg font-normal">/ month</span></div>
           <ul className="space-y-2 text-sm text-gray-700">
-            <li>✅ 300 Projects / month</li>
-            <li>✅ Advanced AI models</li>
+            <li>✅ 200 projects / month</li>
+            <li>✅ Feature requests</li>
             <li>✅ Priority support</li>
           </ul>
           <button

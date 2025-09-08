@@ -1,4 +1,4 @@
-export type ProjectStatus = 'PENDING' | 'PROCESSING' | 'TRANSLATING' | 'TYPESETTING' | 'UPDATING' | 'COMPLETED' | 'FAILED'
+export type ProjectStatus = 'PENDING' | 'PROCESSING' | 'TRANSLATING' | 'TYPESETTING' | 'COMPLETED' | 'FAILED'
 
 export type EditorBubble = {
 	id: number
