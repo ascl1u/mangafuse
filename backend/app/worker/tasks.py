@@ -224,6 +224,14 @@ def process_translation(project_id: str, artifacts: Dict[str, str] | None = None
 
 
 def process_initial_typeset(project_id: str) -> None:
+    # Update project status to TYPESETTING when typesetting begins
+    with worker_session_scope() as session:
+        project = session.get(Project, project_id)
+        if project:
+            project.status = ProjectStatus.TYPESETTING
+            session.add(project)
+            session.commit()
+
     job_dir = get_job_dir(project_id)
     try:
         result = orchestrator_apply_edits(job_dir)
@@ -233,7 +241,7 @@ def process_initial_typeset(project_id: str) -> None:
             project = session.get(Project, project_id)
             if project:
                 project.status = ProjectStatus.FAILED
-                project.failure_reason = f"typeset_failed: {exc}"
+                project.failure_reason = f"Typesetting failed due to system error: {exc}"
                 session.add(project)
         logger.exception("initial_typeset_failed", extra={"project_id": project_id})
         return
@@ -332,7 +340,7 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
             project = session.get(Project, project_id)
             if project:
                 project.status = ProjectStatus.FAILED
-                project.failure_reason = f"typeset_failed: {exc}"
+                project.failure_reason = f"Typesetting failed due to system error: {exc}"
                 # On failure, persist the editor payload which now contains all error fields.
                 # This makes the complete set of errors available to the frontend.
                 editor_payload_path = job_dir / "editor_payload.json"

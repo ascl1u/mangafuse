@@ -610,10 +610,9 @@ def apply_edits(
         # Do not fail the job if editor payload write has issues
         pass
 
-    # If any errors occurred, raise the first one. This signals to the worker that
-    # the job failed, but only after the editor_payload.json with all errors has been saved.
-    if errors:
-        raise errors[0]
+    # Typesetting errors are now handled gracefully - errors are logged and saved to
+    # editor_payload.json, but the function completes successfully to allow user access
+    # to the editor for manual fixes. No exception is raised.
 
     # Expose local artifact file paths for the worker to persist via storage
     artifacts: Dict[str, str] = {}
