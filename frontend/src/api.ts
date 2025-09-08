@@ -2,7 +2,11 @@ import type { PollPayload, ProjectListResponse, BillingStatus } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
-export async function uploadAndStart(file: File, getToken: () => Promise<string | null>): Promise<{ projectId: string; taskId: string }> {
+export async function uploadAndStart(
+	file: File,
+	getToken: () => Promise<string | null>,
+	depth: 'cleaned' | 'full' = 'full'
+): Promise<{ projectId: string; taskId: string }> {
 	const token = await getToken()
 	if (!token) throw new Error('Not authenticated')
 	const headers = { Authorization: `Bearer ${token}` }
@@ -35,7 +39,7 @@ export async function uploadAndStart(file: File, getToken: () => Promise<string 
 
 	const idempotencyKey = projectId
 	const createProjectResp = await fetch(
-		`${API_BASE}/api/v1/projects?project_id=${projectId}&filename=${encodeURIComponent(file.name)}&storage_key=${storageKey}`,
+		`${API_BASE}/api/v1/projects?project_id=${projectId}&filename=${encodeURIComponent(file.name)}&storage_key=${storageKey}&depth=${depth}`,
 		{ method: 'POST', headers: { ...headers, 'X-Idempotency-Key': idempotencyKey } },
 	)
 

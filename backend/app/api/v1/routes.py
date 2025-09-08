@@ -111,6 +111,7 @@ async def create_project(
     project_id: str,
     filename: str,
     storage_key: str,
+    depth: str,
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
@@ -124,6 +125,10 @@ async def create_project(
     from app.api.v1.billing import get_project_count_current_month
 
     settings = get_settings()
+
+    # Validate depth parameter
+    if depth not in ("cleaned", "full"):
+        raise HTTPException(status_code=400, detail="Invalid depth parameter. Must be 'cleaned' or 'full'.")
 
     current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
     limit = settings.plan_limits.get(current_plan_id, 0)
@@ -188,7 +193,7 @@ async def create_project(
             pair = storage.get_output_upload_url(project_id, f"{name.lower()}.tmp")
             if pair:
                 outputs[name] = pair
-        gpu_client.submit_job(job_id=str(project.id), storage_key=storage_key, mode="full", outputs=outputs or None)
+        gpu_client.submit_job(job_id=str(project.id), storage_key=storage_key, mode=depth, outputs=outputs or None)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"gpu submit failed: {exc}")
 

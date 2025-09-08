@@ -22,7 +22,7 @@ function IndexPage() {
     }
     try {
       setSubmitting(true)
-      const { projectId } = await uploadAndStart(file, getToken)
+      const { projectId } = await uploadAndStart(file, getToken, depth)
       navigate({ to: '/projects/$projectId', params: { projectId } })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Upload failed'
@@ -59,6 +59,7 @@ function IndexPage() {
                   type="checkbox"
                   checked={depth === 'cleaned'}
                   onChange={(e) => setDepth(e.target.checked ? 'cleaned' : 'full')}
+                  disabled={submitting}
                 />
                 <span>Clean text only</span>
               </label>

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 import logging
 import time
 
@@ -20,14 +20,13 @@ class PipelineOrchestrator:
         job_id: str,
         image_path: str,
         *,
-        depth: Literal["cleaned", "full"] = "cleaned",
+        depth: Literal["cleaned", "full"] = "full",
         debug: bool = False,
         force: bool = False,
         seg_model_path: Optional[str] = None,
         font_path: Optional[str] = None,
-        progress_callback: Optional[Callable[[str, float], None]] = None,
-        include_typeset: bool = True,
-        include_translate: bool = True,
+        include_typeset: bool = False,
+        include_translate: bool = False,
         job_dir_override: Optional[str | Path] = None,
         models: Any | None = None,
     ):
@@ -37,7 +36,6 @@ class PipelineOrchestrator:
         self.depth = depth
         self.debug = debug
         self.force = force
-        self.progress_callback = progress_callback
         self.include_typeset = include_typeset
         self.include_translate = include_translate
 
@@ -76,14 +74,6 @@ class PipelineOrchestrator:
         self.typeset_debug_path = self.job_dir / "typeset_debug.png"
         self.editor_payload_path = self.job_dir / "editor_payload.json"
 
-    def _update_progress(self, stage: str, progress: float) -> None:
-        if self.progress_callback:
-            try:
-                self.progress_callback(stage, progress)
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "progress_callback_failed", extra={"job_id": self.job_id, "stage": stage}
-                )
 
     def _load_initial_data(self) -> None:
         """Loads the source image and prepares initial directories."""
@@ -108,7 +98,6 @@ class PipelineOrchestrator:
         from app.pipeline.utils.textio import read_text_json, write_text_json
         from app.pipeline.utils.visualization import make_overlay
 
-        self._update_progress("segmentation", 0.1)
         t0 = time.perf_counter()
         if self.force or not (self.overlay_path.exists() and self.json_path.exists()):
             yolo_model = getattr(self.models, "yolo_model", None) if self.models else None
@@ -131,7 +120,6 @@ class PipelineOrchestrator:
 
         self.bubbles = read_text_json(self.json_path).get("bubbles", [])
         self.stage_completed.append("segmentation")
-        self._update_progress("segmentation_complete", 0.2)
         t1 = time.perf_counter()
         logging.getLogger(__name__).info(
             "stage_timing",
@@ -155,7 +143,6 @@ class PipelineOrchestrator:
         from app.pipeline.ocr.preprocess import binarize_for_ocr
         from app.pipeline.utils.textio import save_text_records
 
-        self._update_progress("ocr", 0.35)
         t0 = time.perf_counter()
         if self.models and getattr(self.models, "ocr_engine", None) is not None:
             ocr_engine = self.models.ocr_engine
@@ -185,7 +172,6 @@ class PipelineOrchestrator:
 
         save_text_records(self.json_path, self.bubbles)
         self.stage_completed.append("ocr")
-        self._update_progress("ocr_complete", 0.45)
         t1 = time.perf_counter()
         logging.getLogger(__name__).info(
             "stage_timing",
@@ -205,7 +191,6 @@ class PipelineOrchestrator:
         from app.pipeline.translate.gemini import GeminiTranslator
         from app.pipeline.utils.textio import save_text_records
 
-        self._update_progress("translate", 0.5)
         api_key = os.getenv("GOOGLE_API_KEY", "")
         translator = GeminiTranslator(api_key=api_key)
         indices_to_translate: list[int] = []
@@ -226,7 +211,6 @@ class PipelineOrchestrator:
                 save_text_records(self.json_path, self.bubbles)
 
             self.stage_completed.append("translate")
-            self._update_progress("translate_complete", 0.6)
             t1 = time.perf_counter()
             logging.getLogger(__name__).info(
                 "stage_timing",
@@ -255,7 +239,6 @@ class PipelineOrchestrator:
         from app.pipeline.inpaint.text_mask import build_text_inpaint_mask
         from app.pipeline.utils.io import read_image_bgr, save_png
 
-        self._update_progress("inpaint", 0.7)
         t0 = time.perf_counter()
         try:
             if self.force or not self.text_mask_path.exists():
@@ -283,7 +266,6 @@ class PipelineOrchestrator:
             result_bgr = run_inpainting(self.image_bgr, mask_for_inpaint, lama_model=lama_model)
             save_png(self.cleaned_path, result_bgr)
             self.stage_completed.append("inpaint")
-            self._update_progress("inpaint_complete", 0.85)
         except Exception as e:
             logging.getLogger(__name__).exception(
                 "inpaint_failed", extra={"job_id": self.job_id}
@@ -309,7 +291,6 @@ class PipelineOrchestrator:
         from app.pipeline.utils.io import read_image_bgr
         from app.pipeline.utils.textio import save_text_records
 
-        self._update_progress("typeset", 0.9)
         t0 = time.perf_counter()
         try:
             if not self.cleaned_path.exists():
@@ -346,7 +327,6 @@ class PipelineOrchestrator:
             save_text_records(self.json_path, self.bubbles)
 
             self.stage_completed.append("typeset")
-            self._update_progress("typeset_complete", 1.0)
             t1 = time.perf_counter()
             logging.getLogger(__name__).info(
                 "stage_timing",

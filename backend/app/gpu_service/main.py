@@ -20,7 +20,7 @@ class JobInput(BaseModel):
 
 class SubmitJobBody(BaseModel):
     job_id: str
-    mode: str = "full"  # "cleaned" | "full"
+    mode: str  # "cleaned" | "full"
     input: JobInput
     callback_url: Optional[str] = None
     outputs: Optional[Dict[str, Dict[str, str]]] = None  # name -> {storage_key, put_url}

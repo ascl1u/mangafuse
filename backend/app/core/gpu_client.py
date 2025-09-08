@@ -25,7 +25,7 @@ class GpuClient(Protocol):
         *,
         job_id: str,
         storage_key: str,
-        mode: str = "full",
+        mode: str,
         outputs: Optional[Dict[str, Tuple[str, str]]] = None,
     ) -> None:
         """Submit a job to the GPU service."""
@@ -51,7 +51,7 @@ class LocalGpuClient:
         *,
         job_id: str,
         storage_key: str,
-        mode: str = "full",
+        mode: str,
         outputs: Optional[Dict[str, Tuple[str, str]]] = None,
     ) -> None:
         callback_url = f"{self._public_backend}/api/v1/gpu/callback"
@@ -109,7 +109,7 @@ class CloudGpuClient:
         self._api_key = api_key
         # ... other cloud-specific config
 
-    def submit_job(self, *, job_id: str, storage_key: str, mode: str = "full") -> None:
+    def submit_job(self, *, job_id: str, storage_key: str, mode: str) -> None:
         raise NotImplementedError("Cloud GPU client is not yet implemented.")
 
 
