@@ -15,11 +15,11 @@ from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser
 from app.db.session import check_database_connection
 from app.db.deps import get_current_user, get_db_session, get_current_subscription
 from sqlmodel import Session, select
-from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, Customer, Subscription
+from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, ProcessingMode, Customer, Subscription
 from app.core.storage import get_storage_service, StorageService
 import stripe
 from app.worker.queue import get_default_queue, get_high_priority_queue
-from app.worker.tasks import process_translation, retypeset_after_edits
+from app.worker.tasks import process_translation, process_initial_typeset, retypeset_after_edits
 from app.core.gpu_client import GpuClient, get_gpu_client
 
 
@@ -130,6 +130,9 @@ async def create_project(
     if depth not in ("cleaned", "full"):
         raise HTTPException(status_code=400, detail="Invalid depth parameter. Must be 'cleaned' or 'full'.")
 
+    # Convert depth to ProcessingMode enum
+    processing_mode = ProcessingMode.FULL if depth == "full" else ProcessingMode.CLEANED
+
     current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
     limit = settings.plan_limits.get(current_plan_id, 0)
 
@@ -180,7 +183,7 @@ async def create_project(
             # Another identical request is in-flight; return a stable response without re-submitting
             return {"project_id": project_id}
 
-    project = Project(id=project_id, user_id=user.clerk_user_id, title=filename)
+    project = Project(id=project_id, user_id=user.clerk_user_id, title=filename, processing_mode=processing_mode)
     artifact = ProjectArtifact(project_id=project.id, artifact_type=ArtifactType.SOURCE_RAW, storage_key=storage_key)
     # Mark as processing immediately
     project.status = ProjectStatus.PROCESSING
@@ -261,7 +264,6 @@ def get_project(
             ProjectStatus.PROCESSING: ("processing", 0.3),
             ProjectStatus.TRANSLATING: ("translating", 0.7),
             ProjectStatus.TYPESETTING: ("typesetting", 0.9),
-            ProjectStatus.UPDATING: ("updating", 0.6),
             ProjectStatus.COMPLETED: ("completed", 1.0),
             ProjectStatus.FAILED: ("failed", 1.0),
         }
@@ -340,7 +342,7 @@ def update_project(
     attributes.flag_modified(project, "editor_data")
 
     project.editor_data_rev = int(project.editor_data_rev or 0) + 1
-    project.status = ProjectStatus.UPDATING
+    project.status = ProjectStatus.TYPESETTING
     session.add(project)
     session.commit()
 
@@ -418,25 +420,38 @@ async def gpu_callback(
 
     # Persist artifact references only; enqueue worker job
     artifacts = payload.get("artifacts") or {}
-    project.status = ProjectStatus.TRANSLATING
+
+    # Conditional workflow based on processing mode
+    next_task = None
+    next_task_args = []
+    next_task_id = ""
+
+    if project.processing_mode == ProcessingMode.CLEANED:
+        # For cleaned jobs, skip translation and go directly to finalization
+        project.status = ProjectStatus.TYPESETTING
+        next_task = process_initial_typeset
+        next_task_args = [job_id]
+        next_task_id = f"initial-typeset-{job_id}"
+    else:  # ProcessingMode.FULL
+        # For full jobs, proceed with the original translation flow
+        project.status = ProjectStatus.TRANSLATING
+        next_task = process_translation
+        next_task_args = [job_id, artifacts]
+        next_task_id = f"translate-{job_id}"
+
     session.add(project)
     session.commit()
 
+    # Refactored enqueue logic to avoid duplication
     try:
         q = get_default_queue()
-        job_id_enq = f"translate-{job_id}"
         # Idempotency for duplicate GPU callbacks: no-op if the job already exists
-        existing = q.fetch_job(job_id_enq)
+        existing = q.fetch_job(next_task_id)
         if not existing:
-            q.enqueue(
-                process_translation,
-                job_id,
-                artifacts,
-                job_id=job_id_enq,
-            )
+            q.enqueue(next_task, *next_task_args, job_id=next_task_id)
     except Exception as exc:
         # Treat enqueue errors as transient; avoid flipping to FAILED on duplicate callback races
-        logging.getLogger(__name__).exception("enqueue_translate_failed", extra={"project_id": job_id})
+        logging.getLogger(__name__).exception("enqueue_failed", extra={"project_id": job_id, "next_task": next_task_id})
         raise HTTPException(status_code=503, detail="Queue unavailable")
 
     return {"status": "ok"}

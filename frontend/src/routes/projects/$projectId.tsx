@@ -179,7 +179,7 @@ function ProjectPage() {
     return (
       <div className="max-w-2xl">
         <h1 className="text-xl font-semibold mb-3">Project {projectId}</h1>
-        <div className="text-sm">Status: {status}{stage ? ` — ${stage}` : ''}</div>
+        <div className="text-sm">Status: {stage || status}</div>
         {typeof progress === 'number' && (
           <div className="mt-3">
             <div className="w-full h-2 bg-gray-200 rounded" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} role="progressbar">

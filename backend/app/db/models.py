@@ -15,9 +15,13 @@ class ProjectStatus(str, Enum):
     PROCESSING = "PROCESSING"
     TRANSLATING = "TRANSLATING"
     TYPESETTING = "TYPESETTING"
-    UPDATING = "UPDATING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class ProcessingMode(str, Enum):
+    FULL = "FULL"
+    CLEANED = "CLEANED"
 
 
 class ArtifactType(str, Enum):
@@ -44,6 +48,10 @@ class Project(SQLModel, table=True):
     status: ProjectStatus = Field(
         sa_column=sa.Column(sa.Enum(ProjectStatus, name="project_status_enum"), nullable=False, index=True),
         default=ProjectStatus.PENDING,
+    )
+    processing_mode: ProcessingMode = Field(
+        sa_column=sa.Column(sa.Enum(ProcessingMode, name="processing_mode_enum"), nullable=False),
+        default=ProcessingMode.FULL,
     )
     editor_data: Optional[dict] = Field(default=None, sa_column=sa.Column(JSONB, nullable=True))
     editor_data_rev: int = Field(default=0, sa_column=sa.Column(sa.Integer, nullable=False, server_default="0"))
@@ -110,6 +118,7 @@ __all__ = [
     "Project",
     "ProjectArtifact",
     "ProjectStatus",
+    "ProcessingMode",
     "ArtifactType",
     "Customer",
     "Subscription",
