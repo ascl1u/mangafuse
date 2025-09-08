@@ -1,6 +1,27 @@
 import { useMemo } from 'react'
 import type { EditorPayload } from '../types'
 
+// Helper function to determine error type from error message
+function getErrorType(errorMessage: string): 'translation' | 'typeset' {
+  return errorMessage === "Translation failed" ? 'translation' : 'typeset'
+}
+
+// Helper function to get error styling based on type
+function getErrorStyle(errorType: 'translation' | 'typeset'): { bgColor: string; textColor: string; borderColor: string } {
+  return {
+    translation: {
+      bgColor: "bg-yellow-50",
+      textColor: "text-yellow-700",
+      borderColor: "border-yellow-200"
+    },
+    typeset: {
+      bgColor: "bg-red-50",
+      textColor: "text-red-700",
+      borderColor: "border-red-200"
+    }
+  }[errorType]
+}
+
 
 type Props = {
   editor?: EditorPayload
@@ -27,7 +48,7 @@ export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText }:
       <div className="space-y-1">
         <label className="text-sm font-medium">Text</label>
         {selected.error && (
-          <div className="p-2 text-sm bg-red-50 text-red-700 rounded border border-red-200">
+          <div className={`p-2 text-sm rounded border ${getErrorStyle(getErrorType(selected.error)).bgColor} ${getErrorStyle(getErrorType(selected.error)).textColor} ${getErrorStyle(getErrorType(selected.error)).borderColor}`}>
             <strong>Error:</strong> {selected.error}
           </div>
         )}

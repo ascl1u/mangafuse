@@ -162,6 +162,7 @@ def process_translation(project_id: str, artifacts: Dict[str, str] | None = None
     _, json_path = _ensure_cleaned_and_text(project_id, artifacts)
 
     # Translate missing en_text values, but do not fail hard if translation errors
+    translation_failed = False
     try:
         from app.pipeline.utils.textio import read_text_json, save_text_records
         from app.pipeline.translate.gemini import GeminiTranslator
@@ -185,6 +186,26 @@ def process_translation(project_id: str, artifacts: Dict[str, str] | None = None
             save_text_records(json_path, bubbles)
     except Exception as exc:
         logger.warning("translation_failed", extra={"project_id": project_id, "error": str(exc)})
+        translation_failed = True
+
+        # Record translation errors without failing the project
+        with worker_session_scope() as session:
+            project = session.get(Project, project_id)
+            if project:
+                # Set global error message
+                project.failure_reason = "Automated translation service failed. Please add text manually."
+
+                # Set per-bubble errors for bubbles that were intended for translation
+                data = read_text_json(json_path)
+                bubbles = data.get("bubbles", [])
+                for i, rec in enumerate(bubbles):
+                    ja = (rec.get("ja_text") or "").strip()
+                    has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip() != ""
+                    if ja and not has_en:
+                        bubbles[i]["error"] = "Translation failed"
+                save_text_records(json_path, bubbles)
+
+                session.add(project)
 
     # Chain to initial typeset on the default queue
     try:

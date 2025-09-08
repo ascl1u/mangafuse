@@ -39,6 +39,19 @@ function polygonBBox(poly: [number, number][]) {
   return { x0, y0, x1, y1, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) }
 }
 
+// Helper function to determine error type from error message
+function getErrorType(errorMessage: string): 'translation' | 'typeset' {
+  return errorMessage === "Translation failed" ? 'translation' : 'typeset'
+}
+
+// Helper function to get error styling based on type
+function getErrorStyle(errorType: 'translation' | 'typeset'): { strokeColor: string } {
+  return {
+    translation: { strokeColor: "#eab308" }, // Yellow for translation errors
+    typeset: { strokeColor: "#ef4444" }      // Red for typeset errors
+  }[errorType]
+}
+
 export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, disabled }: Props) {
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
   const imageUrl = `${API_BASE}${editor.image_url}`
@@ -119,9 +132,7 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
           {polygons.map((poly, idx) => {
             const b = bubbles[idx]
             const isSelected = idx === selectedIdx
-            const rect = b.rect
-              ? { x0: b.rect.x * scale, y0: b.rect.y * scale, w: Math.max(1, b.rect.w * scale), h: Math.max(1, b.rect.h * scale) }
-              : polygonBBox(poly)
+            const rect = polygonBBox(poly)
             const centerX = rect.x0 + rect.w / 2
             const centerY = rect.y0 + rect.h / 2
             const spinnerRadius = Math.max(8, Math.min(20, Math.min(rect.w, rect.h) * 0.1))
@@ -136,14 +147,14 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
                   height={rect.h}
                   fill="rgba(0,0,0,0.001)"
                 />
-                {/* Show a red border if the bubble has an error */}
+                {/* Show colored border based on error type */}
                 {b.error && (
                   <Rect
                     x={rect.x0}
                     y={rect.y0}
                     width={rect.w}
                     height={rect.h}
-                    stroke="#ef4444"
+                    stroke={getErrorStyle(getErrorType(b.error)).strokeColor}
                     strokeWidth={2}
                   />
                 )}

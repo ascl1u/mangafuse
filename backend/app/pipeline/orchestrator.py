@@ -510,11 +510,20 @@ def apply_edits(
 
     font = get_assets_root() / "fonts" / "animeace2_reg.ttf"
 
+    def safe_get_text(rec: Dict[str, Any]) -> str:
+        """Safely extract text for typesetting, handling None values gracefully."""
+        if "en_text" in rec and rec["en_text"] is not None:
+            text = str(rec["en_text"])
+        else:
+            text = ""  # Empty string prevents Unicode box characters
+
+        return text.strip()
+
     records: List[BubbleText] = [
         BubbleText(
             bubble_id=int(rec.get("id")),
             polygon=rec.get("polygon") or [],
-            text=(rec["en_text"] if "en_text" in rec else rec.get("ja_text", "")).strip(),
+            text=safe_get_text(rec),
             font_size=(int(rec.get("font_size")) if isinstance(rec.get("font_size"), (int, float)) else None),
         )
         for rec in bubbles

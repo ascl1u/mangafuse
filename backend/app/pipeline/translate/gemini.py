@@ -80,11 +80,15 @@ class GeminiTranslator:
             translation_map = {item.original_japanese: item.english_translation for item in parsed_items}
             
             ordered_translations = [
-                translation_map.get(text, f"Translation not found for: {text}") for text in texts
+                translation_map.get(text, "") for text in texts  # Return empty string instead of error message
             ]
             
             return ordered_translations
 
         except Exception as e:
-            print(f"An error occurred during Gemini API call: {e}")
-            return [""] * len(texts)
+            # Log the specific error for debugging purposes.
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error("Gemini API call failed", exc_info=e)
+            # Re-raise the exception to allow the calling worker to handle it.
+            raise

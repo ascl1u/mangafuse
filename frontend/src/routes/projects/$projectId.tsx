@@ -44,7 +44,7 @@ function ProjectPage() {
   const [editor, setEditor] = useState<EditorPayload | undefined>(() => seedEditorFromData(data))
   const [pendingEditIds, setPendingEditIds] = useState<number[]>([])
   const [updating, setUpdating] = useState(false)
-  const [editError, setEditError] = useState<string | undefined>(undefined)
+  const [projectError, setProjectError] = useState<string | undefined>(undefined)
 
   // If loader changes (hard refresh or revalidation), update editor seed
   const seededFromLoader = useMemo(() => seedEditorFromData(data), [data])
@@ -78,6 +78,10 @@ function ProjectPage() {
     if (snapshot?.status === 'COMPLETED' && snapshot.editor_data) {
       const seeded = seedEditorFromData(snapshot)
       if (seeded) setEditor(seeded)
+    }
+    // Check for errors regardless of project status
+    if (snapshot?.error) {
+      setProjectError(snapshot.error)
     }
   }, [snapshot])
 
@@ -120,7 +124,7 @@ function ProjectPage() {
 
   async function onApplyEdits() {
     if (!editor) return
-    setEditError(undefined)
+    setProjectError(undefined)
     const diffs = Object.entries(edits)
       .map(([idStr, patch]) => ({ id: Number(idStr), en_text: patch.en_text }))
       .filter(({ id, en_text }) => {
@@ -137,13 +141,13 @@ function ProjectPage() {
       if (next.status === 'FAILED') {
         const apiError = next.error || 'Edit failed'
         const userFriendly = apiError.includes('typeset_failed') ? 'Text is too long to fit in the errored bubbles.' : apiError
-        setEditError(userFriendly)
+        setProjectError(userFriendly)
       }
       const seeded = seedEditorFromData(next)
       if (seeded) setEditor(seeded)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      setEditError(message)
+      setProjectError(message)
     } finally {
       setPendingEditIds([])
       setUpdating(false)
@@ -203,9 +207,9 @@ function ProjectPage() {
           >
             {updating ? 'Applying…' : 'Apply edits'}
           </button>
-          {editError && (
+          {projectError && (
             <div className="mt-2 p-2 text-sm bg-red-50 text-red-700 rounded border border-red-200">
-              <strong>Error:</strong> {editError}
+              <strong>Error:</strong> {projectError}
             </div>
           )}
         </div>
@@ -226,7 +230,7 @@ function ProjectPage() {
           onSelect={setSelectedBubbleId}
           pendingEditIds={pendingEditIds}
           disabled={updating}
-          hasEditFailed={!!editError}
+          hasEditFailed={!!projectError}
         />
       </div>
     </div>
