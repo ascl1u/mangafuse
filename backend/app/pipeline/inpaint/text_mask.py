@@ -12,8 +12,8 @@ def build_text_inpaint_mask(
     image_bgr: np.ndarray,
     instance_masks: List[np.ndarray],
     bubbles: List[Dict],
-    erode_border_px: int = 2,
-    dilate_text_px: int = 1,
+    erode_border_px: int = 3,
+    dilate_text_px: int = 3,
     kernel_size: int = 3,
 ) -> np.ndarray:
     """
@@ -63,15 +63,20 @@ def build_text_inpaint_mask(
         if x1 <= x0 or y1 <= y0:
             continue
 
-        # Binarize the crop to find text pixels
-        try:
-            bin_img = binarize_for_ocr(crop_bgr)
-        except Exception:
-            gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-            _, bin_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Isolate and dilate text to ensure full coverage
-        text_local = (bin_img < 128).astype(np.uint8) * 255
+        # Convert crop to HSV color space to isolate brightness from color.
+        hsv_crop = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+        v_channel = hsv_crop[:, :, 2]  # Value channel
+
+        # Use Otsu's thresholding on the Value channel to reliably separate dark text
+        # from the lighter, colored backgrounds.
+        # This creates a mask where text is black (0) and background is white (255).
+        _, text_mask_inv = cv2.threshold(
+            v_channel, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
+        # Invert the mask so text is white (255), which is the standard for masks.
+        text_local = cv2.bitwise_not(text_mask_inv)
+        # Dilate text to ensure full coverage
         if dilate_text_px > 0:
             text_local = cv2.dilate(text_local, kernel, iterations=int(dilate_text_px))
             
