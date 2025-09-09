@@ -56,22 +56,11 @@ export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, dis
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
   const imageUrl = `${API_BASE}${editor.image_url}`
   const img = useHtmlImage(imageUrl)
-  const [textLayerUrl, setTextLayerUrl] = useState<string | undefined>(undefined)
-  useEffect(() => {
-    const raw = editor.text_layer_url
-    if (!raw) {
-      setTextLayerUrl(undefined)
-      return
-    }
-    const isAbsolute = /^https?:\/\//i.test(raw)
-    const base = isAbsolute ? raw : `${API_BASE}${raw}`
-    let finalUrl = base
-    if (!isAbsolute) {
-      const sep = base.includes('?') ? '&' : '?'
-      finalUrl = `${base}${sep}t=${Date.now()}`
-    }
-    setTextLayerUrl(finalUrl)
-  }, [API_BASE, editor])
+
+  // ✅ DERIVE IT DIRECTLY (with a cache-busting timestamp)
+  const textLayerUrl = editor.text_layer_url
+    ? `${API_BASE}${editor.text_layer_url}?t=${Date.now()}`
+    : undefined
   const textLayerImg = useHtmlImage(textLayerUrl)
 
   // Fit-to-width sizing: container width is measured via ref

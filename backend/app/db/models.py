@@ -30,6 +30,7 @@ class ArtifactType(str, Enum):
     FINAL_PNG = "FINAL_PNG"
     TEXT_LAYER_PNG = "TEXT_LAYER_PNG"
     DOWNLOADABLE_ZIP = "DOWNLOADABLE_ZIP"
+    TEXT_JSON = "TEXT_JSON"
 
 
 # User model removed - using Clerk Direct ID approach

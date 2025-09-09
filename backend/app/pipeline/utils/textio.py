@@ -36,10 +36,11 @@ def read_text_json(json_path: Path) -> Dict[str, Any]:
     return data
 
 
-def save_text_records(json_path: Path, bubbles: List[Dict[str, Any]]) -> None:
+def save_text_records(json_path: Path, payload: Dict[str, Any]) -> None:
+    """Saves a complete data payload to the specified JSON path."""
     ensure_dir(json_path.parent)
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({"bubbles": bubbles}, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 

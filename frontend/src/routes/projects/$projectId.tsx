@@ -9,25 +9,7 @@ import { useAppStore } from '../../store'
 
 type RouterContext = { getToken: () => Promise<string | null> }
 
-function resolveAssetPath(path: string | undefined): string | undefined {
-  if (!path) return undefined
-  if (/^https?:\/\//i.test(path)) return path
-  if (path.startsWith('/')) return path
-  return `/artifacts/${path}`
-}
 
-function extractTextLayerUrlFromResult(r: PollPayload): string | undefined {
-  const artifacts = r.artifacts || {}
-  const direct = (artifacts['TEXT_LAYER_PNG'] as unknown as string) || (artifacts['text_layer_url'] as unknown as string)
-  if (typeof direct === 'string' && direct.length > 0) return resolveAssetPath(direct)
-  return undefined
-}
-
-function seedEditorFromData(data: PollPayload | undefined): EditorPayload | undefined {
-  if (!data?.editor_data) return undefined
-  const tl = extractTextLayerUrlFromResult(data)
-  return { ...data.editor_data, text_layer_url: tl }
-}
 
 function ProjectPage() {
   const { projectId } = Route.useParams()
@@ -42,16 +24,15 @@ function ProjectPage() {
   const resetProjectState = useAppStore((s) => s.resetProjectState)
 
   const [snapshot, setSnapshot] = useState<PollPayload>(data)
-  const [editor, setEditor] = useState<EditorPayload | undefined>(() => seedEditorFromData(data))
+  const [editor, setEditor] = useState<EditorPayload | undefined>(data?.editor_data)
   const [pendingEditIds, setPendingEditIds] = useState<number[]>([])
   const [updating, setUpdating] = useState(false)
   const [projectError, setProjectError] = useState<string | undefined>(undefined)
 
   // If loader changes (hard refresh or revalidation), update editor seed
-  const seededFromLoader = useMemo(() => seedEditorFromData(data), [data])
   useEffect(() => {
-    setEditor(seededFromLoader)
-  }, [seededFromLoader])
+    setEditor(data?.editor_data)
+  }, [data])
 
   // Auto-poll while non-terminal: refresh snapshot until COMPLETED or FAILED
   useEffect(() => {
@@ -77,8 +58,7 @@ function ProjectPage() {
   // When snapshot reaches COMPLETED with editor_data, hydrate editor state
   useEffect(() => {
     if (snapshot?.status === 'COMPLETED' && snapshot.editor_data) {
-      const seeded = seedEditorFromData(snapshot)
-      if (seeded) setEditor(seeded)
+      setEditor(snapshot.editor_data)
     }
     // Check for errors and warnings regardless of project status
     if (snapshot?.error) {
@@ -156,8 +136,7 @@ function ProjectPage() {
         // If the operation succeeded and there are no warnings, clear any previous error
         setProjectError(undefined)
       }
-      const seeded = seedEditorFromData(next)
-      if (seeded) setEditor(seeded)
+      setEditor(next.editor_data)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setProjectError(message)

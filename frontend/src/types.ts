@@ -29,7 +29,6 @@ export type PollPayload = {
 	editor_data_rev?: number
 	artifacts?: { [key: string]: string }
 	editor_data?: EditorPayload
-	editor_payload_url?: string
 }
 
 export type ExportPayload = {

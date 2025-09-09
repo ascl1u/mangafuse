@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 import logging
 import time
+import json # 👈 Add json import
+import cv2  # 👈 Add cv2 import
 
 
 class PipelineOrchestrator:
@@ -72,7 +74,6 @@ class PipelineOrchestrator:
         self.cleaned_path = self.job_dir / "cleaned.png"
         self.final_path = self.job_dir / "final.png"
         self.typeset_debug_path = self.job_dir / "typeset_debug.png"
-        self.editor_payload_path = self.job_dir / "editor_payload.json"
 
 
     def _load_initial_data(self) -> None:
@@ -364,66 +365,13 @@ class PipelineOrchestrator:
         }
         return result
 
-    def _generate_editor_assets(self) -> None:
-        """Generates bubble crops and the editor_payload.json file for the frontend."""
-        import cv2
-        import json
-        from app.pipeline.utils.io import ensure_dir, save_png
-        from app.pipeline.ocr.crops import tight_crop_from_mask
-
-        if not self.bubbles:
-            return
-
-        ensure_dir(self.crops_dir)
-        normalized_bubbles: List[Dict[str, Any]] = []
-
-        for rec in self.bubbles:
-            bubble_id = int(rec["id"])
-            polygon = rec.get("polygon") or []
-            crop_url = None
-            crop_path = self.crops_dir / f"{bubble_id}.png"
-
-            try:
-                # Use the individual mask file which should have been saved during segmentation
-                mask_path = self.masks_dir / f"{bubble_id}.png"
-                if mask_path.exists():
-                    mask_gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-                    # Crop from the original image, not the cleaned one
-                    crop_bgr, _ = tight_crop_from_mask(self.image_bgr, mask_gray, polygon)
-                    save_png(crop_path, crop_bgr)
-                    crop_url = f"/artifacts/jobs/{self.job_id}/crops/{bubble_id}.png"
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "crop_generation_failed", extra={"job_id": self.job_id, "bubble_id": bubble_id}
-                )
-
-            normalized_bubbles.append(
-                {
-                    "id": bubble_id,
-                    "polygon": polygon,
-                    "ja_text": rec.get("ja_text"),
-                    "en_text": rec.get("en_text"),
-                    "font_size": rec.get("font_size"),
-                    "rect": rec.get("rect"),
-                    "crop_url": crop_url,
-                }
-            )
-
-        # Use the cleaned image as the main background for the editor
-        image_url = f"/artifacts/jobs/{self.job_id}/cleaned.png"
-
-        editor_payload = {
-            "image_url": image_url,
-            "width": self.width,
-            "height": self.height,
-            "bubbles": normalized_bubbles,
-        }
-
-        with open(self.editor_payload_path, "w", encoding="utf-8") as f:
-            json.dump(editor_payload, f, ensure_ascii=False, indent=2)
 
     def run(self) -> Dict[str, Any]:
         """Executes the full pipeline in the correct order."""
+        from app.pipeline.utils.io import ensure_dir, save_png
+        from app.pipeline.ocr.crops import tight_crop_from_mask
+        from app.pipeline.utils.textio import save_text_records
+
         self._load_initial_data()
         self._run_segmentation()
 
@@ -436,7 +384,38 @@ class PipelineOrchestrator:
         if self.depth == "full":
             self._run_typeset()
 
-        self._generate_editor_assets()
+        # ✅ NEW: Directly enrich the bubble data with UI fields before final save
+        if self.bubbles:
+            ensure_dir(self.crops_dir)
+            for rec in self.bubbles:
+                bubble_id = int(rec["id"])
+                polygon = rec.get("polygon") or []
+                crop_path = self.crops_dir / f"{bubble_id}.png"
+
+                try:
+                    mask_path = self.masks_dir / f"{bubble_id}.png"
+                    if mask_path.exists():
+                        mask_gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                        crop_bgr, _ = tight_crop_from_mask(self.image_bgr, mask_gray, polygon)
+                        save_png(crop_path, crop_bgr)
+                        # The URL is relative to the artifacts root, which is correct for the frontend
+                        rec["crop_url"] = f"/artifacts/jobs/{self.job_id}/crops/{bubble_id}.png"
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "crop_generation_failed", extra={"job_id": self.job_id, "bubble_id": bubble_id}
+                    )
+
+        # ✅ Construct the complete payload object
+        final_payload = {
+            "image_url": f"/artifacts/jobs/{self.job_id}/cleaned.png",
+            "text_layer_url": f"/artifacts/jobs/{self.job_id}/text_layer.png" if self.final_path.exists() else None,
+            "width": self.width,
+            "height": self.height,
+            "bubbles": self.bubbles,
+        }
+
+        # Save the final, enriched payload to text.json
+        save_text_records(self.json_path, final_payload)
 
         return self._build_final_payload()
 
@@ -543,58 +522,24 @@ def apply_edits(
                 rect = used_rects[bid]
                 rec["rect"] = {k: int(v) for k, v in rect.items()}
 
-    save_text_records(json_path, bubbles)
+    # ✅ Construct the complete payload object before saving
+    height, width, _ = img_cleaned.shape
+    final_payload = {
+        "image_url": f"/artifacts/jobs/{job_id}/cleaned.png",
+        "text_layer_url": f"/artifacts/jobs/{job_id}/text_layer.png" if text_layer_path.exists() else None,
+        "width": width,
+        "height": height,
+        "bubbles": bubbles, # The bubbles list now contains all updated data
+    }
 
-    # Build/update editor payload. This will now include any 'error' fields attached above.
-    editor_payload_path = job_dir / "editor_payload.json"
-    try:
-        normalized: List[Dict[str, Any]] = []
-        crops_dir = job_dir / "crops"
+    # Save the updated, complete payload back to the canonical text.json
+    save_text_records(json_path, final_payload)
 
-        for rec in bubbles:
-            bubble_id = int(rec.get("id"))
-            polygon = rec.get("polygon") or []
-            rect_payload = rec.get("rect") if isinstance(rec.get("rect"), dict) else None
-            crop_path = crops_dir / f"{bubble_id}.png"
-            crop_url = f"/artifacts/jobs/{job_id}/crops/{bubble_id}.png" if crop_path.exists() else None
+    # ❌ REMOVE THE OLD LOGIC FOR BUILDING a separate editor_payload.json
+    # Instead, we will use the now-updated text.json for everything.
 
-            normalized.append(
-                {
-                    "id": bubble_id,
-                    "polygon": polygon,
-                    "ja_text": rec.get("ja_text"),
-                    "en_text": rec.get("en_text"),
-                    "font_size": rec.get("font_size"),
-                    "rect": rect_payload,
-                    "crop_url": crop_url,
-                    "error": rec.get("error"), # Pass the error field to the final payload if it exists
-                }
-            )
-
-        # Prefer cleaned image as background for accurate editor preview
-        image_url = f"/artifacts/jobs/{job_id}/cleaned.png" if cleaned_path.exists() else f"/artifacts/jobs/{job_id}/segmentation_overlay.png"
-
-        # Infer width/height from cleaned image where possible
-        img_for_dims = cv2.imread(str(cleaned_path))
-        width_val, height_val = (img_for_dims.shape[1], img_for_dims.shape[0]) if img_for_dims is not None else (None, None)
-
-        editor_payload: Dict[str, Any] = {
-            "image_url": image_url,
-            "width": width_val,
-            "height": height_val,
-            "bubbles": normalized,
-        }
-        with open(editor_payload_path, "w", encoding="utf-8") as f:
-            json.dump(editor_payload, f, ensure_ascii=False, indent=2)
-    except Exception:
-        # Do not fail the job if editor payload write has issues
-        pass
-
-    # Typesetting errors are now handled gracefully - errors are logged and saved to
-    # editor_payload.json, but the function completes successfully to allow user access
-    # to the editor for manual fixes. No exception is raised.
-
-    # Expose local artifact file paths for the worker to persist via storage
+    # Construct the final payload to return to the worker.
+    # We no longer need a separate editor_payload_url.
     artifacts: Dict[str, str] = {}
     if final_path.exists():
         artifacts["FINAL_PNG"] = str(final_path)
@@ -603,14 +548,14 @@ def apply_edits(
     if cleaned_path.exists():
         artifacts["CLEANED_PAGE"] = str(cleaned_path)
 
+    # ✅ Add the canonical text.json to the list of artifacts to be persisted.
+    if json_path.exists():
+        artifacts["TEXT_JSON"] = str(json_path)
+
     result: Dict[str, Any] = {
         "task_id": job_id,
-        "final_url": f"/artifacts/jobs/{job_id}/final.png" if final_path.exists() else None,
-        "text_layer_url": f"/artifacts/jobs/{job_id}/text_layer.png" if text_layer_path.exists() else None,
-        "editor_payload_url": f"/artifacts/jobs/{job_id}/editor_payload.json" if editor_payload_path.exists() else None,
         "had_typesetting_errors": len(errors) > 0,
         "typesetting_error_count": len(errors),
+        "artifacts": artifacts,
     }
-    if artifacts:
-        result["artifacts"] = artifacts
     return result

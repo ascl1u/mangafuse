@@ -77,7 +77,15 @@ def create_app() -> FastAPI:
     artifacts_dir = get_artifacts_root()
     if settings.app_env == "development":
         artifacts_dir.mkdir(parents=True, exist_ok=True)
-        app.mount("/artifacts", StaticFiles(directory=str(artifacts_dir), html=False), name="artifacts")
+        static_files_app = StaticFiles(directory=str(artifacts_dir), html=False)
+        # Mount the StaticFiles app, wrapped in a new CORSMiddleware instance
+        app.mount("/artifacts", CORSMiddleware(
+            static_files_app,
+            allow_origins=["http://localhost:5173"], # Be specific for dev
+            allow_credentials=True,
+            allow_methods=["GET"], # Only GET is needed for static files
+            allow_headers=["*"],
+        ), name="artifacts")
     assets_dir = get_assets_root()
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir), html=False), name="assets")

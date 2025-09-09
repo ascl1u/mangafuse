@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from sqlalchemy.orm import attributes  # 👈 Add this import
 from sqlmodel import select
 
 from app.core.paths import get_job_dir
@@ -152,68 +153,62 @@ def _package_and_upload_zip(project_id: str, storage, session) -> None:
 
 
 def process_translation(project_id: str, artifacts: Dict[str, str] | None = None) -> None:
-    with worker_session_scope() as session:
-        project = session.get(Project, project_id)
-        if not project:
-            logger.warning("project_missing", extra={"project_id": project_id})
-            return
+    # This function is now responsible for translating AND persisting the result to the DB.
+    from app.pipeline.utils.textio import read_text_json
+    from app.pipeline.translate.gemini import GeminiTranslator
+    import os
 
-    # Ensure inputs present
+    # No initial session scope needed, as we'll open one to save the final state.
+
+    # 1. Download necessary artifacts from storage
     _, json_path = _ensure_cleaned_and_text(project_id, artifacts)
 
-    # Translate missing en_text values, but do not fail hard if translation errors
-    translation_failed = False
-    try:
-        from app.pipeline.utils.textio import read_text_json, save_text_records
-        from app.pipeline.translate.gemini import GeminiTranslator
-        import os
+    # 2. Perform translation in memory
+    data = read_text_json(json_path)
+    bubbles = data.get("bubbles", [])
 
-        data = read_text_json(json_path)
-        bubbles = data.get("bubbles", [])
-        texts: list[str] = []
-        indices: list[int] = []
+    try:
+        texts_to_translate: list[str] = []
+        indices_to_translate: list[int] = []
         for i, rec in enumerate(bubbles):
             ja = (rec.get("ja_text") or "").strip()
             has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip() != ""
             if ja and not has_en:
-                indices.append(i)
-                texts.append(ja)
-        if texts:
+                indices_to_translate.append(i)
+                texts_to_translate.append(ja)
+
+        if texts_to_translate:
             translator = GeminiTranslator(api_key=os.getenv("GOOGLE_API_KEY", ""))
-            en_list = translator.translate_batch(texts)
-            for idx, en in zip(indices, en_list):
+            en_list = translator.translate_batch(texts_to_translate)
+            for idx, en in zip(indices_to_translate, en_list):
                 bubbles[idx]["en_text"] = en
-            save_text_records(json_path, bubbles)
+
+        # 3. ✅ PERSIST THE TRANSLATED STATE TO THE DATABASE
+        with worker_session_scope() as session:
+            project = session.get(Project, project_id)
+            if not project:
+                logger.warning("project_missing_after_translation", extra={"project_id": project_id})
+                return
+
+            # The full data payload now includes the translations
+            project.editor_data = data # data object now contains the modified bubbles list
+            attributes.flag_modified(project, "editor_data")
+            session.add(project)
+
     except Exception as exc:
         logger.warning("translation_failed", extra={"project_id": project_id, "error": str(exc)})
-        translation_failed = True
-
-        # Record translation errors without failing the project
         with worker_session_scope() as session:
             project = session.get(Project, project_id)
             if project:
-                # Set completion warning for translation issues
                 project.completion_warnings = "Automated translation service failed. Please add text manually."
-
-                # Set per-bubble errors for bubbles that were intended for translation
-                data = read_text_json(json_path)
-                bubbles = data.get("bubbles", [])
-                for i, rec in enumerate(bubbles):
-                    ja = (rec.get("ja_text") or "").strip()
-                    has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip() != ""
-                    if ja and not has_en:
-                        bubbles[i]["error"] = "Translation failed"
-                save_text_records(json_path, bubbles)
-
                 session.add(project)
 
-    # Chain to initial typeset on the default queue
+    # 4. Enqueue the next step
     try:
         q = get_default_queue()
         job_id_enq = f"initial-typeset-{project_id}"
         q.enqueue(process_initial_typeset, project_id, job_id=job_id_enq)
     except Exception as exc:
-        # If enqueue fails, mark project failed so the user sees a clear state
         with worker_session_scope() as session:
             project = session.get(Project, project_id)
             if project:
@@ -224,18 +219,55 @@ def process_translation(project_id: str, artifacts: Dict[str, str] | None = None
 
 
 def process_initial_typeset(project_id: str) -> None:
-    # Update project status to TYPESETTING when typesetting begins
+    job_dir = get_job_dir(project_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. ✅ FETCH STATE FROM DATABASE
+    # This is the crucial first step. It gets the translated data from the previous worker.
+    with worker_session_scope() as session:
+        project = session.get(Project, project_id)
+        if not project:
+            logger.warning("project_missing_for_typeset", extra={"project_id": project_id})
+            return
+
+        if not project.editor_data or not project.editor_data.get("bubbles"):
+             # Handle case where segmentation found no bubbles. Mark as complete but with a warning.
+            project.status = ProjectStatus.COMPLETED
+            project.completion_warnings = "No speech bubbles were detected. The project is complete but no text was processed."
+            session.add(project)
+            return
+
+        # 2. ✅ WRITE THE STATE TO A LOCAL text.json for the orchestrator
+        json_path = job_dir / "text.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(project.editor_data, f, ensure_ascii=False, indent=2)
+
+        # 3. ✅ Download the cleaned image, as it's not guaranteed to be local
+        cleaned_path = job_dir / "cleaned.png"
+        if not cleaned_path.exists():
+            cleaned_artifact = session.exec(select(ProjectArtifact).where(
+                ProjectArtifact.project_id == project_id,
+                ProjectArtifact.artifact_type == ArtifactType.CLEANED_PAGE
+            )).first()
+            if not cleaned_artifact:
+                raise RuntimeError(f"CLEANED_PAGE artifact not found for project {project_id}")
+
+            storage = get_storage_service()
+            with open(cleaned_path, "wb") as wf:
+                with storage.get_artifact(cleaned_artifact.storage_key) as rf:
+                    wf.write(rf.read())
+
+    # 4. Run the typesetter and finalize the project (logic is now the same as retypeset)
+    # Update project status to TYPESETTING
     with worker_session_scope() as session:
         project = session.get(Project, project_id)
         if project:
             project.status = ProjectStatus.TYPESETTING
             session.add(project)
-            session.commit()
 
-    job_dir = get_job_dir(project_id)
+    # The rest of this function now mirrors the logic from retypeset_after_edits' success path
     try:
         result = orchestrator_apply_edits(job_dir)
-
         # Check for typesetting errors and set completion warnings if needed
         if result.get("had_typesetting_errors", False):
             error_count = result.get("typesetting_error_count", 0)
@@ -279,23 +311,23 @@ def process_initial_typeset(project_id: str) -> None:
             else:
                 session.add(ProjectArtifact(project_id=project.id, artifact_type=ArtifactType(artifact_type), storage_key=storage_key))
 
-        # Attach editor payload to project if present
-        editor_payload_path = job_dir / "editor_payload.json"
-        if editor_payload_path.exists():
-            try:
-                with open(editor_payload_path, "r", encoding="utf-8") as f:
+        # Update editor_data with the final, typeset-aware data
+        final_json_path_str = result.get("artifacts", {}).get("TEXT_JSON")
+        if final_json_path_str:
+            final_json_path = Path(final_json_path_str)
+            if final_json_path.exists():
+                with open(final_json_path, "r", encoding="utf-8") as f:
                     project.editor_data = json.load(f)
-            except Exception:
-                project.editor_data = None
 
         project.status = ProjectStatus.COMPLETED
         session.add(project)
 
-        # Best-effort: package and upload downloadable zip
         _package_and_upload_zip(project_id, storage, session)
 
 
 def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Optional[List[int]] = None) -> None:
+    # This function's logic is now almost identical to the final part of process_initial_typeset
+    # The key difference is it starts with data already in the DB from user edits.
     job_dir = get_job_dir(project_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -304,12 +336,11 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
         if not project:
             logger.warning("project_missing", extra={"project_id": project_id})
             return
-        # Skip stale job
         if project.editor_data_rev > revision:
             logger.info("stale_edit_job", extra={"project_id": project_id, "job_rev": revision, "current_rev": project.editor_data_rev})
             return
 
-        # Ensure cleaned.png is present; fetch from storage if missing
+        # Fetch cleaned image artifact
         cleaned_path = job_dir / "cleaned.png"
         if not cleaned_path.exists():
             cleaned_artifact = session.exec(
@@ -333,21 +364,17 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
                 with storage.get_artifact(cleaned_artifact.storage_key) as rf:
                     wf.write(rf.read())
 
-        # The API has already updated the bubbles list. This worker's only job
-        # is to read that canonical state and re-run the typesetter.
-        bubbles = project.editor_data.get("bubbles") if isinstance(project.editor_data, dict) else None
-        if not bubbles or not isinstance(bubbles, list):
-            raise RuntimeError("Editor data missing bubbles for re-typesetting")
+        # The API already updated editor_data. We just need to write it locally for the orchestrator.
+        if not project.editor_data:
+            raise RuntimeError("Editor data is missing for re-typesetting")
 
-        # Rebuild text.json from the canonical 'bubbles' list in the database.
         json_path = job_dir / "text.json"
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({"bubbles": bubbles}, f, ensure_ascii=False, indent=2)
+            json.dump(project.editor_data, f, ensure_ascii=False, indent=2)
 
+    # The rest of the finalization process is identical to process_initial_typeset
     try:
-        # Pass the edited_bubble_ids to the orchestrator for partial re-rendering.
         result = orchestrator_apply_edits(job_dir, edited_bubble_ids=edited_bubble_ids)
-
         # Check for typesetting errors and set completion warnings if needed
         if result.get("had_typesetting_errors", False):
             error_count = result.get("typesetting_error_count", 0)
@@ -365,21 +392,19 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
             if project:
                 project.status = ProjectStatus.FAILED
                 project.failure_reason = f"Typesetting failed due to system error: {exc}"
-                # On failure, persist the editor payload which now contains all error fields.
-                # This makes the complete set of errors available to the frontend.
-                editor_payload_path = job_dir / "editor_payload.json"
-                if editor_payload_path.exists():
+                # The orchestrator updated text.json with error details right before it failed.
+                # We must read from it to preserve those details.
+                json_path = job_dir / "text.json"
+                if json_path.exists():
                     try:
-                        with open(editor_payload_path, "r", encoding="utf-8") as f:
+                        with open(json_path, "r", encoding="utf-8") as f:
                             project.editor_data = json.load(f)
                     except Exception:
                         logger.exception("failed_to_persist_editor_data_on_error", extra={"project_id": project_id})
 
                 session.add(project)
 
-                # Even if some bubbles failed, successful edits likely produced updated
-                # local artifacts (e.g., final.png, text_layer.png). Package a fresh zip
-                # so users can download the latest partial results.
+                # Package a zip so users can download partial results on failure.
                 try:
                     storage = get_storage_service()
                     _package_and_upload_zip(project_id, storage, session)
@@ -415,14 +440,13 @@ def retypeset_after_edits(project_id: str, revision: int, edited_bubble_ids: Opt
                 )
                 session.add(new_artifact)
 
-        # Refresh editor payload with post-edit values if present
-        editor_payload_path = job_dir / "editor_payload.json"
-        if editor_payload_path.exists():
-            try:
-                with open(editor_payload_path, "r", encoding="utf-8") as f:
+        # Update editor_data with the final, re-typeset data
+        final_json_path_str = result.get("artifacts", {}).get("TEXT_JSON")
+        if final_json_path_str:
+            final_json_path = Path(final_json_path_str)
+            if final_json_path.exists():
+                with open(final_json_path, "r", encoding="utf-8") as f:
                     project.editor_data = json.load(f)
-            except Exception:
-                pass
 
         project.status = ProjectStatus.COMPLETED
         session.add(project)
