@@ -152,7 +152,7 @@ def _package_and_upload_zip(project_id: str, storage, session) -> None:
         logger.exception("zip_package_failed", extra={"project_id": project_id})
 
 
-def process_translation(project_id: str, artifacts: Dict[str, str] | None = None) -> None:
+def process_translation(project_id: str) -> None:
     # This function is now responsible for translating AND persisting the result to the DB.
     from app.pipeline.utils.textio import read_text_json
     from app.pipeline.translate.gemini import GeminiTranslator
@@ -160,8 +160,8 @@ def process_translation(project_id: str, artifacts: Dict[str, str] | None = None
 
     # No initial session scope needed, as we'll open one to save the final state.
 
-    # 1. Download necessary artifacts from storage
-    _, json_path = _ensure_cleaned_and_text(project_id, artifacts)
+    # 1. Download necessary artifacts from storage (now queries database instead of using parameter)
+    _, json_path = _ensure_cleaned_and_text(project_id, None)
 
     # 2. Perform translation in memory
     data = read_text_json(json_path)
@@ -229,6 +229,37 @@ def process_initial_typeset(project_id: str) -> None:
         if not project:
             logger.warning("project_missing_for_typeset", extra={"project_id": project_id})
             return
+        # If editor_data is missing, this task is now responsible for initializing it.
+        # This occurs in the "cleaned" flow where the translation step is bypassed.
+        if not project.editor_data:
+            logger.info("initializing_editor_data_from_artifact", extra={"project_id": project_id})
+            storage = get_storage_service()
+            text_json_artifact = session.exec(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.project_id == project_id, ProjectArtifact.artifact_type == ArtifactType.TEXT_JSON
+                )
+            ).first()
+
+            if not text_json_artifact:
+                project.status = ProjectStatus.FAILED
+                project.failure_reason = "Critical artifact TEXT_JSON was not found after GPU processing."
+                session.add(project)
+                logger.error("missing_text_json_artifact", extra={"project_id": project_id})
+                return
+
+            try:
+                with storage.get_artifact(text_json_artifact.storage_key) as f:
+                    editor_data_payload = json.load(f)
+                project.editor_data = editor_data_payload
+                attributes.flag_modified(project, "editor_data")
+                session.add(project)
+                logger.info("editor_data_initialized_successfully", extra={"project_id": project_id})
+            except Exception as e:
+                project.status = ProjectStatus.FAILED
+                project.failure_reason = f"Failed to load or parse TEXT_JSON artifact: {e}"
+                session.add(project)
+                logger.exception("failed_to_initialize_editor_data", extra={"project_id": project_id})
+                return
 
         if not project.editor_data or not project.editor_data.get("bubbles"):
              # Handle case where segmentation found no bubbles. Mark as complete but with a warning.

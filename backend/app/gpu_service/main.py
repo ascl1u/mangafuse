@@ -99,17 +99,39 @@ def _run_pipeline_and_callback(body: SubmitJobBody) -> None:
         error_detail = str(e)
         logging.getLogger(__name__).exception("pipeline_failed", extra={"job_id": job_id})
 
-    # In local dev, we do not push outputs anywhere; backend will read from artifacts volume.
-    # A production variant would PUT to presigned URLs and then POST the callback.
+    # Always report artifacts in callback payload for consistent behavior between local dev and production
     if body.callback_url:
         try:
             import httpx
 
             payload = {"job_id": job_id, "status": status}
-            if status == "COMPLETED" and body.outputs:
-                payload["artifacts"] = {name: spec.get("storage_key") for name, spec in body.outputs.items() if spec.get("storage_key")}
             if error_detail:
                 payload["error"] = error_detail
+
+            if status == "COMPLETED":
+                # Construct the callback payload
+                artifacts_to_report = {}
+
+                if body.outputs:
+                    # For production, the source of truth is the presigned URL contract.
+                    artifacts_to_report = {name: spec.get("storage_key") for name, spec in body.outputs.items() if spec.get("storage_key")}
+                else:
+                    # For local dev, report the relative paths as storage keys.
+                    json_path_str = result.get("paths", {}).get("json")
+                    if json_path_str and Path(json_path_str).exists():
+                        artifacts_to_report["TEXT_JSON"] = str(Path(json_path_str).relative_to(artifacts_root)).replace(
+                            "\\", "/"
+                        )
+
+                    cleaned_path_str = result.get("paths", {}).get("cleaned")
+                    if cleaned_path_str and Path(cleaned_path_str).exists():
+                        artifacts_to_report["CLEANED_PAGE"] = str(Path(cleaned_path_str).relative_to(artifacts_root)).replace(
+                            "\\", "/"
+                        )
+
+                if artifacts_to_report:
+                    payload["artifacts"] = artifacts_to_report
+
             with httpx.Client(timeout=10.0) as client:
                 client.post(body.callback_url, json=payload)
         except Exception:

@@ -418,8 +418,46 @@ async def gpu_callback(
         session.commit()
         return {"status": "ok"}
 
-    # Persist artifact references only; enqueue worker job
-    artifacts = payload.get("artifacts") or {}
+    # Persist artifact records from the GPU service callback. This is the source of truth.
+    artifacts_payload = payload.get("artifacts") or {}
+    for artifact_type_str, storage_key in artifacts_payload.items():
+        if not storage_key:
+            continue
+
+        try:
+            artifact_type = ArtifactType(artifact_type_str)
+            # Upsert logic to handle duplicate callbacks gracefully
+            existing_artifact = session.exec(
+                select(ProjectArtifact).where(
+                    ProjectArtifact.project_id == project.id,
+                    ProjectArtifact.artifact_type == artifact_type,
+                )
+            ).first()
+
+            if existing_artifact:
+                existing_artifact.storage_key = storage_key
+                session.add(existing_artifact)
+                logger.info(
+                    "updated_existing_artifact",
+                    extra={"project_id": job_id, "artifact_type": artifact_type_str, "storage_key": storage_key}
+                )
+            else:
+                session.add(
+                    ProjectArtifact(
+                        project_id=project.id,
+                        artifact_type=artifact_type,
+                        storage_key=storage_key,
+                    )
+                )
+                logger.info(
+                    "created_new_artifact",
+                    extra={"project_id": job_id, "artifact_type": artifact_type_str, "storage_key": storage_key}
+                )
+        except ValueError:
+            logger.warning(
+                "unknown_artifact_type_in_callback",
+                extra={"project_id": job_id, "artifact_type": artifact_type_str},
+            )
 
     # Conditional workflow based on processing mode
     next_task = None
@@ -430,13 +468,13 @@ async def gpu_callback(
         # For cleaned jobs, skip translation and go directly to finalization
         project.status = ProjectStatus.TYPESETTING
         next_task = process_initial_typeset
-        next_task_args = [job_id]
+        next_task_args = [job_id]  # No longer needs artifact dict - can query database
         next_task_id = f"initial-typeset-{job_id}"
     else:  # ProcessingMode.FULL
         # For full jobs, proceed with the original translation flow
         project.status = ProjectStatus.TRANSLATING
         next_task = process_translation
-        next_task_args = [job_id, artifacts]
+        next_task_args = [job_id]  # No longer needs artifact dict - can query database
         next_task_id = f"translate-{job_id}"
 
     session.add(project)
