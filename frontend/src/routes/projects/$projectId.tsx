@@ -23,15 +23,15 @@ function ProjectPage() {
   const updateEdit = useAppStore((s) => s.updateEdit)
   const resetProjectState = useAppStore((s) => s.resetProjectState)
 
+  // `snapshot` is now the single source of truth for all project data from the API.
   const [snapshot, setSnapshot] = useState<PollPayload>(data)
-  const [editor, setEditor] = useState<EditorPayload | undefined>(data?.editor_data)
   const [pendingEditIds, setPendingEditIds] = useState<number[]>([])
   const [updating, setUpdating] = useState(false)
   const [projectError, setProjectError] = useState<string | undefined>(undefined)
 
-  // If loader changes (hard refresh or revalidation), update editor seed
+  // When loader data changes (e.g., on re-validation), update the snapshot.
   useEffect(() => {
-    setEditor(data?.editor_data)
+    setSnapshot(data)
   }, [data])
 
   // Auto-poll while non-terminal: refresh snapshot until COMPLETED or FAILED
@@ -55,12 +55,8 @@ function ProjectPage() {
     }
   }, [projectId, getToken, snapshot?.status])
 
-  // When snapshot reaches COMPLETED with editor_data, hydrate editor state
+  // Update project-level error state from the snapshot.
   useEffect(() => {
-    if (snapshot?.status === 'COMPLETED' && snapshot.editor_data) {
-      setEditor(snapshot.editor_data)
-    }
-    // Check for errors and warnings regardless of project status
     if (snapshot?.error) {
       setProjectError(snapshot.error)
     } else if (snapshot?.completion_warnings) {
@@ -100,22 +96,22 @@ function ProjectPage() {
   const status = snapshot?.status
   const stage = snapshot?.meta?.stage
 
-  // Compute the text field values shown in the editor: user edit overrides payload
+  // ✅ Derive the editor payload directly from the `snapshot` state.
   const effectiveEditor = useMemo<EditorPayload | undefined>(() => {
-    if (!editor) return undefined
-    const bubbles = editor.bubbles.map((b) => ({
+    if (!snapshot?.editor_data) return undefined
+    const bubbles = snapshot.editor_data.bubbles.map((b) => ({
       ...b,
       en_text: (edits[b.id]?.en_text ?? b.en_text),
     }))
-    return { ...editor, bubbles }
-  }, [editor, edits])
+    return { ...snapshot.editor_data, bubbles }
+  }, [snapshot, edits])
 
   async function onApplyEdits() {
-    if (!editor) return
+    if (!snapshot?.editor_data) return
     const diffs = Object.entries(edits)
       .map(([idStr, patch]) => ({ id: Number(idStr), en_text: patch.en_text }))
       .filter(({ id, en_text }) => {
-        const bubble = editor.bubbles.find((b) => b.id === id)
+        const bubble = snapshot.editor_data?.bubbles.find((b) => b.id === id)
         if (!bubble) return false
         if (en_text === undefined) return false
         return (en_text?.trim() ?? '') !== (bubble.en_text?.trim() ?? '')
@@ -125,18 +121,17 @@ function ProjectPage() {
     setUpdating(true)
     try {
       const next = await applyEditsAndWaitForRev(projectId, diffs, data?.editor_data_rev ?? 0, getToken)
-      // Update error state based on API response, prioritizing errors over warnings
+      // ✅ Update the single source of truth with the result.
+      setSnapshot(next)
+
       if (next.status === 'FAILED') {
         const apiError = next.error || 'Edit failed'
         setProjectError(apiError)
       } else if (next.completion_warnings) {
-        // If the operation succeeded but has warnings, display them
         setProjectError(next.completion_warnings)
       } else {
-        // If the operation succeeded and there are no warnings, clear any previous error
         setProjectError(undefined)
       }
-      setEditor(next.editor_data)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setProjectError(message)
@@ -223,6 +218,7 @@ function ProjectPage() {
           pendingEditIds={pendingEditIds}
           disabled={updating}
           hasEditFailed={!!projectError}
+          revision={snapshot?.editor_data_rev ?? 0}
         />
       </div>
     </div>

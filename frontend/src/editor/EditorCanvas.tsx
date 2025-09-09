@@ -9,6 +9,7 @@ type Props = {
   pendingEditIds: number[]
   disabled?: boolean
   hasEditFailed?: boolean
+  revision: number
 }
 
 function useHtmlImage(src?: string): HTMLImageElement | undefined {
@@ -52,14 +53,14 @@ function getErrorStyle(errorType: 'translation' | 'typeset'): { strokeColor: str
   }[errorType]
 }
 
-export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, disabled }: Props) {
+export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, disabled, revision }: Props) {
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
   const imageUrl = `${API_BASE}${editor.image_url}`
   const img = useHtmlImage(imageUrl)
 
-  // ✅ DERIVE IT DIRECTLY (with a cache-busting timestamp)
+  // ✅ Use the stable `revision` prop for cache-busting
   const textLayerUrl = editor.text_layer_url
-    ? `${API_BASE}${editor.text_layer_url}?t=${Date.now()}`
+    ? `${API_BASE}${editor.text_layer_url}?rev=${revision}`
     : undefined
   const textLayerImg = useHtmlImage(textLayerUrl)
 
