@@ -46,8 +46,8 @@ def _parse_yolo_results(result: Any) -> Dict[str, List]:
 def run_segmentation(
     image_bgr: np.ndarray,
     seg_model_path: Path,
-    conf_thresh: float = 0.2,
-    nms_iou_thresh: float = 0.40,
+    conf_thresh: float = 0.8,
+    nms_iou_thresh: float = 0.2,
     yolo_model: Optional[Any] = None,
 ) -> Dict[str, List]:
     """
@@ -91,7 +91,7 @@ def run_segmentation(
     # Force GPU usage (device=0). Fail fast if CUDA is not available.
     results = model.predict(
         source=image_bgr,
-        imgsz=imgsz,
+        imgsz=640,
         retina_masks=False,  # less memory; we'll use polygons and rasterize when needed
         conf=conf_thresh,
         iou=nms_iou_thresh,
