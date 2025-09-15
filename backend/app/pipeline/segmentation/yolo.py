@@ -81,12 +81,6 @@ def run_segmentation(
     model = yolo_model if yolo_model is not None else YOLO(str(seg_model_path))
     img_h, img_w = image_bgr.shape[:2]
 
-    # Calculate optimal image size for YOLOv8 (multiple of 32)
-    def _round_to_multiple_of_32(n: int) -> int:
-        return int(np.clip((n + 31) // 32 * 32, 320, 1536))
-
-    imgsz = _round_to_multiple_of_32(max(img_h, img_w))
-
     # 2. Run Prediction (use Ultralytics' own NMS via iou)
     # Force GPU usage (device=0). Fail fast if CUDA is not available.
     results = model.predict(
