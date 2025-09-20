@@ -13,7 +13,7 @@ def build_text_inpaint_mask(
     instance_masks: List[np.ndarray],
     bubbles: List[Dict],
     erode_border_px: int = 3,
-    dilate_text_px: int = 3,
+    dilate_text_px: int = 5,
     kernel_size: int = 3,
 ) -> np.ndarray:
     """
