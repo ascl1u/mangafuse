@@ -16,6 +16,8 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from app.pipeline.orchestrator import run_pipeline
 from app.pipeline.utils.io import ensure_dir
+from app.pipeline.model_registry import ModelRegistry # 👈 Add this import
+from app.core.paths import get_assets_root # 👈 Add this import
 
 @dataclass
 class ScriptConfig:
@@ -27,6 +29,7 @@ class ScriptConfig:
     run_mode: str # 'full' or 'cleaned'
     debug: bool
     force: bool
+    models: ModelRegistry # 👈 Add this to the config
 
 def parse_args() -> argparse.Namespace:
     """Parses command-line arguments."""
@@ -81,6 +84,7 @@ def process_image(config: ScriptConfig):
             seg_model_path=str(config.seg_model_path),
             font_path=str(config.font_path),
             job_dir_override=str(config.out_dir),
+            models=config.models, # 👈 Pass the preloaded models object
         )
         print("Pipeline execution successful.")
         print(f"Completed stages: {result.get('stage_completed')}")
@@ -123,6 +127,12 @@ def main():
     total_images = len(image_paths)
     print(f"Found {total_images} image(s) to process.")
 
+    # 🚀 Load all models once before the processing loop begins
+    print("Preloading models...")
+    assets_root = get_assets_root()
+    models = ModelRegistry.load(seg_model_path=assets_root / "models" / "model.pt")
+    print("Models loaded successfully.")
+
     for i, image_path in enumerate(image_paths):
         image_start_time = time.time()
         print(f"\n{'='*80}")
@@ -141,6 +151,7 @@ def main():
             run_mode=args.mode,
             debug=args.debug,
             force=args.force,
+            models=models, # 👈 Pass the preloaded models object
         )
         
         process_image(config)
