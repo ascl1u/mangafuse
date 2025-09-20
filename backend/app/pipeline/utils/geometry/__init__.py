@@ -3,7 +3,6 @@
 __all__ = [
     "axis_rect",
     "poly_scanline",
-    "typable_area",
 ]
 
 
