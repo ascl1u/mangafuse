@@ -1,11 +1,12 @@
 import { createRootRoute, Link, Outlet } from '@tanstack/react-router'
+import { Footer } from '../components/Footer'
 import { SignedIn, SignedOut, SignInButton, SignUpButton, UserButton } from '@clerk/clerk-react'
 
 function RootLayout() {
   const X_URL = import.meta.env.VITE_X_URL || '#'
   const DISCORD_URL = import.meta.env.VITE_DISCORD_URL || '#'
   return (
-    <div className="min-h-screen w-full bg-gray-50">
+    <div className="min-h-screen w-full bg-gray-50 flex flex-col">
       <header className="w-full bg-white border-b">
         <div className="mx-auto max-w-[1280px] px-6 h-16 flex items-center justify-between">
           <div className="font-semibold">
@@ -32,9 +33,10 @@ function RootLayout() {
       </header>
       {/* Removed secondary sub-header to simplify navigation */}
 
-      <main className="mx-auto max-w-[1280px] px-6 py-6">
+      <main className="mx-auto max-w-[1280px] px-6 py-6 flex-1 w-full">
         <Outlet />
       </main>
+      <Footer />
     </div>
   )
 }
