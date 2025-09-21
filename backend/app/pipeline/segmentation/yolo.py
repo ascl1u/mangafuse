@@ -15,31 +15,35 @@ def _parse_yolo_results(result: Any) -> Dict[str, List]:
         result: The YOLOv8 result object for a single image.
 
     Returns:
-        A dictionary containing lists of masks, polygons, and confidences.
+        A dictionary containing lists of polygons, confidences, and class IDs.
     """
-    masks: List[np.ndarray] = []
     polygons: List[List[Tuple[float, float]]] = []
     confidences: List[float] = []
+    classes: List[int] = []
 
     if getattr(result, "masks", None) is None:
-        return {"masks": [], "polygons": [], "confidences": []}
+        return {"polygons": [], "confidences": [], "classes": []}
 
-    # Prefer vector polygons; avoid allocating full-resolution masks
+    # Extract polygons from vector masks
     if hasattr(result.masks, "xy") and result.masks.xy is not None and len(result.masks.xy) > 0:
         for poly in result.masks.xy:
             polygons.append([(float(x), float(y)) for x, y in poly])
 
-    # Extract confidences
+    # Extract confidences from boxes
     if hasattr(result, "boxes") and getattr(result.boxes, "conf", None) is not None:
         confidences = [float(c) for c in result.boxes.conf.cpu().numpy()]
 
-    # Polygons-only: avoid materializing full-resolution masks to reduce memory.
-    masks = []
-    n = min(len(polygons), len(confidences))
+    # Extract class IDs from boxes
+    if hasattr(result, "boxes") and getattr(result.boxes, "cls", None) is not None:
+        classes = [int(c) for c in result.boxes.cls.cpu().numpy()]
+
+    # Ensure all lists have the same length by truncating to the minimum
+    n = min(len(polygons), len(confidences), len(classes))
+    
     return {
-        "masks": [],
         "polygons": polygons[:n],
         "confidences": confidences[:n],
+        "classes": classes[:n],
     }
 
 
@@ -85,7 +89,7 @@ def run_segmentation(
     # Force GPU usage (device=0). Fail fast if CUDA is not available.
     results = model.predict(
         source=image_bgr,
-        imgsz=640,
+        imgsz=1280,
         retina_masks=False,  # less memory; we'll use polygons and rasterize when needed
         conf=conf_thresh,
         iou=nms_iou_thresh,
@@ -94,7 +98,7 @@ def run_segmentation(
         verbose=False,
     )
     if not results:
-        return {"polygons": [], "confidences": []}
+        return {"polygons": [], "confidences": [], "classes": []}
 
     # 3. Parse Raw Results
     # This step extracts masks, polygons, and confidences from the YOLO object.
@@ -104,4 +108,5 @@ def run_segmentation(
     return {
         "polygons": parsed_data["polygons"],
         "confidences": parsed_data["confidences"],
+        "classes": parsed_data["classes"],
     }

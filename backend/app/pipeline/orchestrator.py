@@ -1,12 +1,12 @@
+# ruff: noqa: E402
 from __future__ import annotations
 
 import os
+import time
+import cv2
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
-import logging
-import time
-import json # 👈 Add json import
-import cv2  # 👈 Add cv2 import
 
 
 class PipelineOrchestrator:
@@ -69,7 +69,6 @@ class PipelineOrchestrator:
         # Artifact Paths
         self.overlay_path = self.job_dir / "segmentation_overlay.png"
         self.combined_mask_path = self.masks_dir / "all_mask.png"
-        self.text_mask_path = self.masks_dir / "text_mask.png"
         self.json_path = self.job_dir / "text.json"
         self.cleaned_path = self.job_dir / "cleaned.png"
         self.final_path = self.job_dir / "final.png"
@@ -105,19 +104,27 @@ class PipelineOrchestrator:
             result = run_segmentation(image_bgr=self.image_bgr, seg_model_path=self.seg_model, yolo_model=yolo_model)
             polygons = result.get("polygons", [])
             confidences = result.get("confidences", [])
+            classes = result.get("classes", [])
+            
+            final_masks, final_polygons, final_confidences, final_classes = [], [], [], []
+            for i, poly_coords in enumerate(polygons):
+                if len(poly_coords) < 3: 
+                    continue
 
-            temp_masks = []
-            for poly in polygons:
-                m = np.zeros((self.height, self.width), dtype=np.uint8)
-                if poly:
-                    pts = np.array(poly, dtype=np.int32)
-                    cv2.fillPoly(m, [pts], 1)
-                temp_masks.append(m)
+                mask = np.zeros((self.height, self.width), dtype=np.uint8)
+                pts = np.array(poly_coords, dtype=np.int32)
+                cv2.fillPoly(mask, [pts], 1)
+                
+                final_masks.append(mask)
+                final_polygons.append(poly_coords)
+                final_confidences.append(confidences[i] if i < len(confidences) else 0.5)
+                final_classes.append(classes[i] if i < len(classes) else 0)
 
-            overlay_bgr = make_overlay(self.image_bgr, temp_masks, polygons, confidences)
+            # Save masks and json using the raw polygons, masks, and classes
+            overlay_bgr = make_overlay(self.image_bgr, final_masks, final_polygons, final_confidences)
             save_png(self.overlay_path, overlay_bgr)
-            save_masks(self.masks_dir, temp_masks, self.combined_mask_path, self.height, self.width)
-            write_text_json(self.json_path, polygons)
+            save_masks(self.masks_dir, final_masks, self.combined_mask_path, self.height, self.width)
+            write_text_json(self.json_path, final_polygons, final_classes)
 
         self.bubbles = read_text_json(self.json_path).get("bubbles", [])
         self.stage_completed.append("segmentation")
@@ -159,6 +166,7 @@ class PipelineOrchestrator:
             mask_gray = np.zeros((self.height, self.width), dtype=np.uint8)
             if polygon:
                 pts = np.array(polygon, dtype=np.int32)
+                # Use a non-zero value for the mask. 1 is sufficient.
                 cv2.fillPoly(mask_gray, [pts], 1)
 
             crop_bgr, _ = tight_crop_from_mask(self.image_bgr, mask_gray, polygon)
@@ -199,7 +207,7 @@ class PipelineOrchestrator:
         try:
             for idx, rec in enumerate(self.bubbles):
                 ja_text = (rec.get("ja_text") or "").strip()
-                has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip()
+                has_en = isinstance(rec.get("en_text"), str) and rec["en_text"].strip() != ""
                 if ja_text and (not has_en or self.force):
                     indices_to_translate.append(idx)
                     texts_to_translate.append(ja_text)
@@ -233,39 +241,70 @@ class PipelineOrchestrator:
             raise
 
     def _run_inpaint(self) -> None:
-        """Stage 4: Removes original text from the image, creating a 'cleaned' version."""
+        """Stage 4: Fills text areas within bubbles using appropriate method based on bubble type."""
         import cv2
         import numpy as np
+        from app.pipeline.inpaint.fill import fill_white
         from app.pipeline.inpaint.lama import run_inpainting
-        from app.pipeline.inpaint.text_mask import build_text_inpaint_mask
-        from app.pipeline.utils.io import read_image_bgr, save_png
+        from app.pipeline.inpaint.text_mask import prepare_inpaint_regions
+        from app.pipeline.utils.io import save_png
 
         t0 = time.perf_counter()
         try:
-            if self.force or not self.text_mask_path.exists():
-                imasks = []
-                for rec in self.bubbles:
-                    poly = rec.get("polygon") or []
-                    m = np.zeros((self.height, self.width), dtype=np.uint8)
-                    if poly:
-                        pts = np.array(poly, dtype=np.int32)
-                        cv2.fillPoly(m, [pts], 1)
-                    imasks.append(m)
-                text_mask = build_text_inpaint_mask(self.image_bgr, imasks, self.bubbles)
-                save_png(self.text_mask_path, text_mask)
+            # Build all canonical masks in one call
+            # Also centralizes morphology and class unions
+            # Prepare raster masks from polygons for the helper
+            all_masks: list[np.ndarray] = []
+            for rec in self.bubbles:
+                mask = np.zeros((self.height, self.width), dtype=np.uint8)
+                polygon = rec.get("polygon") or []
+                if polygon:
+                    pts = np.array(polygon, dtype=np.int32)
+                    cv2.fillPoly(mask, [pts], 1)
+                all_masks.append(mask)
 
-            text_mask_img = read_image_bgr(self.text_mask_path)
-            text_mask_gray = cv2.cvtColor(text_mask_img, cv2.COLOR_BGR2GRAY)
+            regions = prepare_inpaint_regions(
+                self.image_bgr,
+                all_masks,
+                self.bubbles,
+                # Use defaults defined in helper to avoid duplication
+            )
+            
+            white_text_mask = regions["white_text_mask"]
+            lama_text_mask = regions["lama_text_mask"]
+            interior_white_union = regions["interior_white_union"]
 
-            if np.any(text_mask_gray):
-                mask_for_inpaint = text_mask_gray
-            else:
-                combined_img = cv2.imread(str(self.combined_mask_path), cv2.IMREAD_UNCHANGED)
-                mask_for_inpaint = cv2.cvtColor(combined_img, cv2.COLOR_BGR2GRAY) if combined_img is not None else np.zeros((self.height, self.width), dtype=np.uint8)
+            # Run both cleaners on the original (raw) image
+            final_white = None
+            if int(np.sum(white_text_mask > 0)) > 0:
+                final_white = fill_white(
+                    image_bgr=self.image_bgr,
+                    text_mask_gray=white_text_mask,
+                    bubble_mask_gray=interior_white_union,
+                )
 
-            lama_model = getattr(self.models, "lama_model", None) if self.models else None
-            result_bgr = run_inpainting(self.image_bgr, mask_for_inpaint, lama_model=lama_model)
-            save_png(self.cleaned_path, result_bgr)
+            final_lama = None
+            if int(np.sum(lama_text_mask > 0)) > 0:
+                lama_model = getattr(self.models, "lama_model", None) if self.models else None
+                final_lama = run_inpainting(
+                    image_bgr=self.image_bgr,
+                    mask_gray=lama_text_mask,
+                    lama_model=lama_model,
+                )
+
+            # Compose results deterministically over the raw image
+            final_result = self.image_bgr.copy()
+            if final_white is not None:
+                # White-fill result already applies alpha within the interior; use it as base
+                final_result = final_white
+            if final_lama is not None:
+                m = lama_text_mask > 0
+                final_result[m] = final_lama[m]
+
+            # Save the final cleaned image
+            # Final persistence
+            save_png(self.cleaned_path, final_result)
+            
             self.stage_completed.append("inpaint")
         except Exception as e:
             logging.getLogger(__name__).exception(
@@ -436,7 +475,6 @@ def apply_edits(
     job_dir: Path,
     edited_bubble_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
-    import json
     import cv2  # type: ignore
     import logging
     from app.pipeline.utils.textio import read_text_json, save_text_records
@@ -521,8 +559,8 @@ def apply_edits(
             if used_rects and bid in used_rects:
                 rect = used_rects[bid]
                 rec["rect"] = {k: int(v) for k, v in rect.items()}
-
-    # ✅ Construct the complete payload object before saving
+    
+    # Construct the complete payload object before saving
     height, width, _ = img_cleaned.shape
     final_payload = {
         "image_url": f"/artifacts/jobs/{job_id}/cleaned.png",
@@ -535,11 +573,6 @@ def apply_edits(
     # Save the updated, complete payload back to the canonical text.json
     save_text_records(json_path, final_payload)
 
-    # ❌ REMOVE THE OLD LOGIC FOR BUILDING a separate editor_payload.json
-    # Instead, we will use the now-updated text.json for everything.
-
-    # Construct the final payload to return to the worker.
-    # We no longer need a separate editor_payload_url.
     artifacts: Dict[str, str] = {}
     if final_path.exists():
         artifacts["FINAL_PNG"] = str(final_path)
@@ -548,7 +581,7 @@ def apply_edits(
     if cleaned_path.exists():
         artifacts["CLEANED_PAGE"] = str(cleaned_path)
 
-    # ✅ Add the canonical text.json to the list of artifacts to be persisted.
+    # Add the canonical text.json to the list of artifacts to be persisted.
     if json_path.exists():
         artifacts["TEXT_JSON"] = str(json_path)
 

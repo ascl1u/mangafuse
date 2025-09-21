@@ -12,9 +12,9 @@ def build_text_inpaint_mask(
     image_bgr: np.ndarray,
     instance_masks: List[np.ndarray],
     bubbles: List[Dict],
-    erode_border_px: int = 3,
-    dilate_text_px: int = 5,
-    kernel_size: int = 3,
+    erode_border_px: int,
+    dilate_text_px: int,
+    kernel_size: int,
 ) -> np.ndarray:
     """
     Builds a precise text-only mask from in-memory segmentation data.
@@ -91,3 +91,62 @@ def build_text_inpaint_mask(
 
     _, union_text_mask = cv2.threshold(union_text_mask, 127, 255, cv2.THRESH_BINARY)
     return union_text_mask
+
+
+def prepare_inpaint_regions(
+    image_bgr: np.ndarray,
+    instance_masks: List[np.ndarray],
+    bubbles: List[Dict],
+    *,
+    erode_border_px: int = 6,
+    dilate_text_px: int = 5,
+    kernel_size: int = 3,
+) -> Dict[str, np.ndarray]:
+    """
+    Prepares canonical masks for the inpainting stage with a single source of morphology.
+
+    Returns a dictionary with:
+      - text_mask_total: union of text-only areas across bubbles
+      - mask_white_union: union of class==0 bubble masks
+      - mask_lama_union: union of class==1 bubble masks
+      - interior_white_union: eroded union of white bubbles (protects borders)
+      - white_text_mask: text_mask_total clipped to white bubbles
+      - lama_text_mask: text_mask_total clipped to integrated bubbles
+    """
+    height, width = image_bgr.shape[:2]
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+
+    text_mask_total = build_text_inpaint_mask(
+        image_bgr,
+        instance_masks,
+        bubbles,
+        erode_border_px=erode_border_px,
+        dilate_text_px=dilate_text_px,
+        kernel_size=kernel_size,
+    )
+
+    mask_white_union = np.zeros((height, width), dtype=np.uint8)
+    mask_lama_union = np.zeros((height, width), dtype=np.uint8)
+    for i, rec in enumerate(bubbles):
+        target = mask_white_union if rec.get("class", 0) == 0 else mask_lama_union
+        if i < len(instance_masks):
+            target[:] = np.maximum(target, (instance_masks[i] > 0).astype(np.uint8))
+
+    # Eroded interior for white bubbles to keep a safety margin from outlines
+    interior_white_union = (
+        cv2.erode(mask_white_union, kernel, iterations=max(0, int(erode_border_px)))
+        if erode_border_px > 0
+        else mask_white_union
+    )
+
+    white_text_mask = cv2.bitwise_and(text_mask_total, text_mask_total, mask=mask_white_union * 255)
+    lama_text_mask = cv2.bitwise_and(text_mask_total, text_mask_total, mask=mask_lama_union * 255)
+
+    return {
+        "text_mask_total": text_mask_total,
+        "mask_white_union": mask_white_union,
+        "mask_lama_union": mask_lama_union,
+        "interior_white_union": interior_white_union,
+        "white_text_mask": white_text_mask,
+        "lama_text_mask": lama_text_mask,
+    }

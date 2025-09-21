@@ -10,6 +10,7 @@ from .io import ensure_dir
 def write_text_json(
     json_path: Path,
     polygons: List[List[Tuple[float, float]]],
+    classes: List[int],
 ) -> None:
     ensure_dir(json_path.parent)
     records = []
@@ -18,6 +19,7 @@ def write_text_json(
             {
                 "id": idx,
                 "polygon": [[float(x), float(y)] for x, y in poly],
+                "class": (classes[idx - 1] if classes and (idx - 1) < len(classes) else 0)
             }
         )
     with open(json_path, "w", encoding="utf-8") as f:
@@ -41,6 +43,3 @@ def save_text_records(json_path: Path, payload: Dict[str, Any]) -> None:
     ensure_dir(json_path.parent)
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-
