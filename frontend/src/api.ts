@@ -124,21 +124,14 @@ export async function applyEditsAndWaitForRev(
 }
 
 export async function downloadZip(projectId: string, getToken: () => Promise<string | null>): Promise<void> {
+	// Avoid CORS on cross-origin binary responses by navigating directly to a presigned URL
 	const token = await getToken()
 	if (!token) throw new Error('Not authenticated')
-	const resp = await fetch(`${API_BASE}/api/v1/projects/${projectId}/download`, {
-		headers: { Authorization: `Bearer ${token}` },
-	})
-	if (!resp.ok) throw new Error(`Download failed (${resp.status})`)
-	const blob = await resp.blob()
-	const url = URL.createObjectURL(blob)
-	const a = document.createElement('a')
-	a.href = url
-	a.download = `mangafuse_${projectId}.zip`
-	document.body.appendChild(a)
-	a.click()
-	a.remove()
-	URL.revokeObjectURL(url)
+	const data = await fetchProjectById(projectId, token)
+	const zipUrl = data?.artifacts?.["DOWNLOADABLE_ZIP"]
+	if (!zipUrl) throw new Error('Download package not found. It may still be generating.')
+	// Open in a new tab to avoid disturbing the current page
+	window.open(zipUrl, '_blank', 'noopener,noreferrer')
 }
 
 export async function listProjects(

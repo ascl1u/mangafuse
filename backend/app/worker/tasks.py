@@ -20,6 +20,104 @@ from app.worker.queue import get_default_queue
 logger = logging.getLogger(__name__)
 
 
+def _upload_crops_for_project(project_id: str, job_dir: Path, storage, session) -> None:
+    """Generate and upload bubble crops to storage using deterministic keys.
+
+    This avoids persisting environment-specific URLs and ensures the API can
+    presign crop URLs on read. Uses polygon fallback cropping; masks are not
+    required at this stage.
+    """
+    try:
+        # Read the latest editor_data from the database for authoritative bubble polygons
+        project = session.get(Project, project_id)
+        if not project or not isinstance(project.editor_data, dict):
+            return
+        bubbles = project.editor_data.get("bubbles") or []
+        if not bubbles:
+            return
+
+        # Prefer RAW source image for crops; fallback to cleaned if unavailable
+        import cv2  # type: ignore
+        raw_path = job_dir / "source_image"
+        img_path = None
+        crop_source = "raw"
+
+        if not raw_path.exists():
+            # Try fetching SOURCE_RAW artifact from storage to local path
+            try:
+                raw_art = session.exec(
+                    select(ProjectArtifact).where(
+                        ProjectArtifact.project_id == project_id,
+                        ProjectArtifact.artifact_type == ArtifactType.SOURCE_RAW,
+                    )
+                ).first()
+                if raw_art:
+                    raw_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(raw_path, "wb") as wf:
+                        with storage.get_artifact(raw_art.storage_key) as rf:
+                            wf.write(rf.read())
+            except Exception:
+                pass
+
+        if raw_path.exists():
+            img_path = raw_path
+            crop_source = "raw"
+        else:
+            cleaned_path = job_dir / "cleaned.png"
+            if cleaned_path.exists():
+                img_path = cleaned_path
+                crop_source = "cleaned"
+
+        if img_path is None or not img_path.exists():
+            return
+
+        img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        if img is None:
+            return
+
+        # Ensure local crops directory exists for temporary files
+        crops_dir = job_dir / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+
+        # Crop and upload per bubble
+        from app.pipeline.ocr.crops import tight_crop_from_mask  # lazy import
+        uploaded = 0
+        for rec in bubbles:
+            try:
+                bid = int(rec.get("id"))
+            except Exception:
+                continue
+            polygon = rec.get("polygon") or []
+            if not polygon:
+                continue
+            crop_bgr, _ = tight_crop_from_mask(img, None, polygon)
+            # Skip degenerate crops
+            if crop_bgr is None:
+                continue
+            h, w = crop_bgr.shape[:2]
+            if h <= 0 or w <= 0:
+                continue
+
+            # Save to disk first, then upload via storage abstraction
+            out_path = crops_dir / f"{bid}.png"
+            try:
+                cv2.imwrite(str(out_path), crop_bgr)
+            except Exception:
+                continue
+
+            try:
+                with open(out_path, "rb") as f:
+                    storage.save_artifact(project_id, f"crops/{bid}.png", f)
+                uploaded += 1
+            except Exception:
+                # Best-effort; continue with other crops
+                continue
+
+        logger.info("crops_uploaded", extra={"project_id": project_id, "count": uploaded, "source": crop_source})
+    except Exception:
+        # Swallow errors to avoid failing the whole job on crop upload issues
+        logger.exception("crops_upload_failed", extra={"project_id": project_id})
+
 def _ensure_cleaned_and_text(job_id: str, artifacts: Dict[str, str] | None = None) -> tuple[Path, Path]:
     job_dir = get_job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -353,6 +451,8 @@ def process_initial_typeset(project_id: str) -> None:
         project.status = ProjectStatus.COMPLETED
         session.add(project)
 
+        # Upload bubble crops (best-effort) then package zip
+        _upload_crops_for_project(project_id, job_dir, storage, session)
         _package_and_upload_zip(project_id, storage, session)
 
 

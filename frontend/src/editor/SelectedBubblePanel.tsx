@@ -32,12 +32,15 @@ type Props = {
 
 export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText }: Props) {
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
+  const isAbsolute = (url?: string) => !!url && /^(?:https?:)?\/\//i.test(url)
   const selected = useMemo(() => editor?.bubbles.find((b) => b.id === selectedId), [editor, selectedId])
   if (!editor) return null
   if (!selected) {
     return <p className="text-sm text-gray-600">Click a bubble on the image to edit text.</p>
   }
-  const cropUrl = selected?.crop_url ? `${API_BASE}${selected.crop_url}` : `${API_BASE}${editor.image_url}`
+  const cropUrl = selected?.crop_url
+    ? (isAbsolute(selected.crop_url) ? selected.crop_url : `${API_BASE}${selected.crop_url}`)
+    : (isAbsolute(editor.image_url) ? editor.image_url : `${API_BASE}${editor.image_url}`)
   const patch = edits[selected.id] || {}
   const text = patch.en_text ?? selected.en_text ?? ''
   return (

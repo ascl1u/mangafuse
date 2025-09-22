@@ -16,6 +16,7 @@ from app.pipeline.model_registry import ModelRegistry
 class JobInput(BaseModel):
     storage_key: Optional[str] = None
     path: Optional[str] = None
+    download_url: Optional[str] = None
 
 
 class SubmitJobBody(BaseModel):
@@ -49,20 +50,31 @@ def _run_pipeline_and_callback(body: SubmitJobBody) -> None:
     error_detail = None
 
     try:
-        # Resolve input image path
-        if body.input.path:
-            src_path = Path(body.input.path)
-        elif body.input.storage_key:
-            src_path = artifacts_root / body.input.storage_key
-        else:
-            raise ValueError("missing input path or storage_key")
-        if not src_path.exists():
-            raise ValueError("input not found")
-
-        # Copy input into job_dir/source_image
+        # Resolve/download input image to job_dir/source_image
         dst_path = job_dir / "source_image"
         dst_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_bytes(dst_path, _read_bytes(src_path))
+
+        # Preferred: download via presigned GET when provided
+        if body.input.download_url:
+            import httpx
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    resp = client.get(body.input.download_url)
+                    resp.raise_for_status()
+                    _write_bytes(dst_path, resp.content)
+            except Exception as exc:
+                raise ValueError(f"failed to download input: {exc}")
+        else:
+            # Fallbacks for local/dev
+            if body.input.path:
+                src_path = Path(body.input.path)
+            elif body.input.storage_key:
+                src_path = artifacts_root / body.input.storage_key
+            else:
+                raise ValueError("missing input path or storage_key")
+            if not src_path.exists():
+                raise ValueError("input not found")
+            _write_bytes(dst_path, _read_bytes(src_path))
 
         # Run pipeline without translate or typeset; produce cleaned + text.json (+ optional overlay)
         # Pull preloaded models from app state (may be None in dev)

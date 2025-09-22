@@ -26,6 +26,7 @@ class GpuClient(Protocol):
         job_id: str,
         storage_key: str,
         mode: str,
+        input_download_url: Optional[str] = None,
         outputs: Optional[Dict[str, Tuple[str, str]]] = None,
     ) -> None:
         """Submit a job to the GPU service."""
@@ -52,13 +53,17 @@ class LocalGpuClient:
         job_id: str,
         storage_key: str,
         mode: str,
+        input_download_url: Optional[str] = None,
         outputs: Optional[Dict[str, Tuple[str, str]]] = None,
     ) -> None:
         callback_url = f"{self._public_backend}/api/v1/gpu/callback"
         body = {
             "job_id": job_id,
             "mode": mode,
-            "input": {"storage_key": storage_key},
+            "input": {
+                "storage_key": storage_key,
+                **({"download_url": input_download_url} if input_download_url else {}),
+            },
             "callback_url": callback_url,
         }
         if outputs:

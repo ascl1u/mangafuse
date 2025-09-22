@@ -55,12 +55,17 @@ function getErrorStyle(errorType: 'translation' | 'typeset'): { strokeColor: str
 
 export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, disabled, revision }: Props) {
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
-  const imageUrl = `${API_BASE}${editor.image_url}`
+  const isAbsolute = (url?: string) => !!url && /^(?:https?:)?\/\//i.test(url)
+  const imageUrl = editor.image_url
+    ? (isAbsolute(editor.image_url) ? editor.image_url : `${API_BASE}${editor.image_url}`)
+    : undefined
   const img = useHtmlImage(imageUrl)
 
   // ✅ Use the stable `revision` prop for cache-busting
   const textLayerUrl = editor.text_layer_url
-    ? `${API_BASE}${editor.text_layer_url}?rev=${revision}`
+    ? (isAbsolute(editor.text_layer_url)
+        ? editor.text_layer_url
+        : `${API_BASE}${editor.text_layer_url}${editor.text_layer_url.includes('?') ? `&rev=${revision}` : `?rev=${revision}`}`)
     : undefined
   const textLayerImg = useHtmlImage(textLayerUrl)
 

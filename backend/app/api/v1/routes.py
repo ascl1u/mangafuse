@@ -17,7 +17,6 @@ from app.db.deps import get_current_user, get_db_session, get_current_subscripti
 from sqlmodel import Session, select
 from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, ProcessingMode, Customer, Subscription
 from app.core.storage import get_storage_service, StorageService
-import stripe
 from app.worker.queue import get_default_queue, get_high_priority_queue
 from app.worker.tasks import process_translation, process_initial_typeset, retypeset_after_edits
 from app.core.gpu_client import GpuClient, get_gpu_client
@@ -25,6 +24,46 @@ from app.core.gpu_client import GpuClient, get_gpu_client
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
+
+
+def _build_editor_payload(
+    *,
+    project: Project,
+    storage: StorageService,
+    artifact_url_map: Dict[str, str],
+) -> Dict[str, Any] | None:
+    """Construct an editor payload with environment-appropriate URLs injected.
+
+    - Uses persisted editor_data as the source of truth (width, height, bubbles)
+    - Injects image_url/text_layer_url from artifacts when present
+    - Injects per-bubble crop_url based on deterministic storage keys
+    """
+    ed = project.editor_data if isinstance(project.editor_data, dict) else None
+    if ed is None:
+        return ed  # type: ignore[return-value]
+
+    ed_out: Dict[str, Any] = dict(ed)
+
+    cleaned_url = artifact_url_map.get("CLEANED_PAGE")
+    text_layer_url = artifact_url_map.get("TEXT_LAYER_PNG")
+    if cleaned_url:
+        ed_out["image_url"] = cleaned_url
+    if text_layer_url:
+        ed_out["text_layer_url"] = text_layer_url
+
+    bubbles = ed_out.get("bubbles") if isinstance(ed_out.get("bubbles"), list) else []
+    for b in bubbles:
+        try:
+            bid = int(b.get("id"))
+        except Exception:
+            continue
+        crop_key = f"jobs/{project.id}/crops/{bid}.png"
+        try:
+            b["crop_url"] = storage.get_download_url(crop_key)
+        except Exception:
+            b.pop("crop_url", None)
+
+    return ed_out
 @router.get("/projects", summary="List current user's projects")
 def list_projects(
     page: int = 1,
@@ -196,7 +235,24 @@ async def create_project(
             pair = storage.get_output_upload_url(project_id, f"{name.lower()}.tmp")
             if pair:
                 outputs[name] = pair
-        gpu_client.submit_job(job_id=str(project.id), storage_key=storage_key, mode=depth, outputs=outputs or None)
+
+        # Provide an optional presigned GET URL for the input when using cloud storage
+        input_download_url: str | None = None
+        try:
+            candidate_url = storage.get_download_url(storage_key)
+            # Only pass through absolute HTTP(S) URLs; ignore local dev relative paths
+            if isinstance(candidate_url, str) and candidate_url.lower().startswith(("http://", "https://")):
+                input_download_url = candidate_url
+        except Exception:
+            input_download_url = None
+
+        gpu_client.submit_job(
+            job_id=str(project.id),
+            storage_key=storage_key,
+            mode=depth,
+            input_download_url=input_download_url,
+            outputs=outputs or None,
+        )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"gpu submit failed: {exc}")
 
@@ -278,10 +334,12 @@ def get_project(
 
     if project.status in [ProjectStatus.COMPLETED, ProjectStatus.FAILED]:
         artifacts = session.exec(select(ProjectArtifact).where(ProjectArtifact.project_id == project.id)).all()
-        payload["artifacts"] = {
+        artifact_url_map = {
             art.artifact_type.value: storage.get_download_url(art.storage_key) for art in artifacts
         }
-        payload["editor_data"] = project.editor_data
+        payload["artifacts"] = artifact_url_map
+        # Inject environment-appropriate asset URLs into the editor payload on read.
+        payload["editor_data"] = _build_editor_payload(project=project, storage=storage, artifact_url_map=artifact_url_map)
 
     return payload
 

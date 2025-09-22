@@ -437,17 +437,15 @@ class PipelineOrchestrator:
                         mask_gray = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
                         crop_bgr, _ = tight_crop_from_mask(self.image_bgr, mask_gray, polygon)
                         save_png(crop_path, crop_bgr)
-                        # The URL is relative to the artifacts root, which is correct for the frontend
-                        rec["crop_url"] = f"/artifacts/jobs/{self.job_id}/crops/{bubble_id}.png"
+                        # Do not persist environment-specific URLs; API will inject fetch URLs on read
+                        rec.pop("crop_url", None)
                 except Exception:
                     logging.getLogger(__name__).exception(
                         "crop_generation_failed", extra={"job_id": self.job_id, "bubble_id": bubble_id}
                     )
 
-        # ✅ Construct the complete payload object
+        # ✅ Construct the complete payload object (no environment-specific URLs)
         final_payload = {
-            "image_url": f"/artifacts/jobs/{self.job_id}/cleaned.png",
-            "text_layer_url": f"/artifacts/jobs/{self.job_id}/text_layer.png" if self.final_path.exists() else None,
             "width": self.width,
             "height": self.height,
             "bubbles": self.bubbles,
@@ -560,11 +558,9 @@ def apply_edits(
                 rect = used_rects[bid]
                 rec["rect"] = {k: int(v) for k, v in rect.items()}
     
-    # Construct the complete payload object before saving
+    # Construct the complete payload object before saving (no environment-specific URLs)
     height, width, _ = img_cleaned.shape
     final_payload = {
-        "image_url": f"/artifacts/jobs/{job_id}/cleaned.png",
-        "text_layer_url": f"/artifacts/jobs/{job_id}/text_layer.png" if text_layer_path.exists() else None,
         "width": width,
         "height": height,
         "bubbles": bubbles, # The bubbles list now contains all updated data
