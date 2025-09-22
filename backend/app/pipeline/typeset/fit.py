@@ -15,8 +15,8 @@ def find_optimal_font_size(
     polygon: Polygon,
     font_path: Path,
     font_cache: Dict[int, ImageFont.FreeTypeFont],
-    min_font_size: int = 6,
-    max_font_size: int = 64,
+    min_font_size: int = 8,
+    max_font_size: int = 48,
 ) -> Tuple[int, Optional[LayoutResult]]:
     """
     Finds the optimal font size using a binary search and a font cache.

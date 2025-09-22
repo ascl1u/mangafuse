@@ -50,7 +50,7 @@ def _parse_yolo_results(result: Any) -> Dict[str, List]:
 def run_segmentation(
     image_bgr: np.ndarray,
     seg_model_path: Path,
-    conf_thresh: float = 0.8,
+    conf_thresh: float = 0.6,
     nms_iou_thresh: float = 0.2,
     yolo_model: Optional[Any] = None,
 ) -> Dict[str, List]:
