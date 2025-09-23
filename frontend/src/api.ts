@@ -6,7 +6,7 @@ export async function uploadAndStart(
 	file: File,
 	getToken: () => Promise<string | null>,
 	depth: 'cleaned' | 'full' = 'full'
-): Promise<{ projectId: string; taskId: string }> {
+): Promise<{ projectId: string }> {
 	const token = await getToken()
 	if (!token) throw new Error('Not authenticated')
 	const headers = { Authorization: `Bearer ${token}` }
@@ -49,9 +49,9 @@ export async function uploadAndStart(
 	}
 
 	if (!createProjectResp.ok) throw new Error('Failed to create project')
-	const { task_id: taskId } = await createProjectResp.json()
-
-	return { projectId, taskId }
+	// Backend returns only project_id; taskId is not used downstream
+	await createProjectResp.json()
+	return { projectId }
 }
 
 export async function fetchProjectById(projectId: string, token?: string): Promise<PollPayload> {
