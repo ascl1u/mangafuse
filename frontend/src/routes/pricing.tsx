@@ -91,16 +91,17 @@ function PricingPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6">
 			<UsageBanner />
       <h1 className="text-3xl font-bold text-center">Pricing Plans</h1>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white p-6 rounded-lg border">
           <h2 className="text-xl font-semibold">Free</h2>
           <p className="text-gray-600 mt-2">Get started for free</p>
           <div className="text-3xl font-bold my-4">$0 <span className="text-lg font-normal">/ month</span></div>
           <ul className="space-y-2 text-sm text-gray-700">
             <li>✅ 5 Projects / month</li>
+            <li>✅ Community access</li>
             <li>✅ Basic support</li>
           </ul>
         </div>
@@ -121,6 +122,23 @@ function PricingPage() {
           >
             {loading === 'subscribe' ? 'Redirecting...' : 'Upgrade to Pro'}
           </button>
+        </div>
+
+        <div className="bg-white p-6 rounded-lg border">
+          <h2 className="text-xl font-semibold">Enterprise</h2>
+          <p className="text-gray-600 mt-2">For creators with custom needs</p>
+          <div className="text-3xl font-bold my-4">Custom</div>
+          <ul className="space-y-2 text-sm text-gray-700">
+            <li>✅ More projects / month</li>
+            <li>✅ Custom integrations</li>
+            <li>✅ Dedicated support</li>
+          </ul>
+          <a
+            href="mailto:a.liu27568@gmail.com"
+            className="mt-6 w-full block text-center py-2 px-4 rounded bg-gray-800 text-white hover:bg-gray-900"
+          >
+            Contact Us
+          </a>
         </div>
       </div>
       <div className="text-center mt-4">
