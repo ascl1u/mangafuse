@@ -23,7 +23,23 @@ function UsageBanner() {
 		loadStatus()
 	}, [getToken, isSignedIn])
 
-    // Don't render anything for signed-out users
+	// Helper to calculate and format the reset date
+	const getResetDate = (): string | null => {
+		if (!status) return null;
+
+		// Paid subscribers have a specific period_end date from Stripe
+		if (status.plan_id !== 'free' && status.period_end) {
+			const date = new Date(status.period_end);
+			return date.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+		}
+
+		// Free users reset at the end of the calendar month
+		const now = new Date();
+		const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+		return endOfMonth.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+	}
+
+	// Don't render anything for signed-out users
 	if (!isSignedIn) {
 		return null;
 	}
@@ -37,11 +53,13 @@ function UsageBanner() {
 	}
 
 	const planName = status.plan_id === 'free' ? 'Free Plan' : 'Pro Plan'
+	const resetDate = getResetDate();
 
 	return (
 		<div className="p-3 mb-4 text-sm bg-blue-50 text-blue-800 rounded border border-blue-200">
-			You are on the <strong>{planName}</strong>. You have used {status.project_count} of your {status.project_limit}{' '}
-			monthly projects.
+			<p>You are on the <strong>{planName}</strong> plan. You have used {status.project_count} of your {status.project_limit}{' '}
+			monthly projects.</p>
+			{resetDate && <p className="mt-1">Your limit resets on <strong>{resetDate}</strong>.</p>}
 		</div>
 	)
 }

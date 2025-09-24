@@ -111,6 +111,7 @@ class Subscription(SQLModel, table=True):
     stripe_subscription_id: str = Field(sa_column=sa.Column(sa.String, unique=True, index=True, nullable=False))
     plan_id: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe Price ID for paid plans; "free" for free tier
     status: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe subscription status
+    current_period_start: datetime = Field(sa_column=sa.Column(sa.DateTime(timezone=True), nullable=False))
     current_period_end: datetime = Field(sa_column=sa.Column(sa.DateTime(timezone=True), nullable=False))
     cancel_at_period_end: bool = Field(default=False, sa_column=sa.Column(sa.Boolean, nullable=False, server_default=sa.text("false")))
 

@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -15,16 +15,37 @@ from app.db.deps import get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/billing")
 
-def get_project_count_current_month(session: Session, user_id: str) -> int:
-    """Counts projects created by a user in the current calendar month (UTC)."""
-    # Get the first day of the current month in UTC
-    start_of_month = func.date_trunc('month', func.now())
+from typing import Optional # Add this import at the top of the file
 
-    statement = (
-        select(func.count(Project.id))
-        .where(Project.user_id == user_id)
-        .where(Project.created_at >= start_of_month)
-    )
+def get_project_count_current_billing_period(
+    session: Session, user_id: str, subscription: Optional[Subscription]
+) -> int:
+    """
+    Counts projects created by a user within their current billing period.
+    - For paid subscribers, this is the period defined by their Stripe subscription.
+    - For free users, this falls back to the current calendar month (UTC).
+    """
+    if subscription and subscription.plan_id != "free":
+        # Paid user: Use their personal billing cycle from the subscription record.
+        start_date = subscription.current_period_start
+        end_date = subscription.current_period_end
+        
+        statement = (
+            select(func.count(Project.id))
+            .where(Project.user_id == user_id)
+            .where(Project.created_at >= start_date)
+            .where(Project.created_at < end_date)
+        )
+    else:
+        # Free user: Use the current calendar month.
+        start_of_month = func.date_trunc('month', func.now())
+        
+        statement = (
+            select(func.count(Project.id))
+            .where(Project.user_id == user_id)
+            .where(Project.created_at >= start_of_month)
+        )
+        
     count = session.exec(statement).one()
     return int(count)
 
@@ -118,14 +139,15 @@ def sync_stripe_data(session: Session, stripe_customer_id: str, stripe_client):
         sub.stripe_subscription_id = stripe_sub.get('id')
         sub.status = stripe_sub.get('status')
         sub.plan_id = plan_id
-
+        period_start_ts = stripe_sub.get('current_period_start')
         # Safe access to current_period_end
         period_end_ts = stripe_sub.get('current_period_end')
-        if period_end_ts is None:
-            logger.error("FATAL: current_period_end is None despite passing status checks.",
-                        extra={"stripe_sub_id": stripe_sub.get('id'), "status": stripe_sub.get('status')})
+        if period_start_ts is None or period_end_ts is None:
+            logger.error("FATAL: current_period_start or current_period_end is None.",
+                extra={"stripe_sub_id": stripe_sub.get('id'), "status": stripe_sub.get('status')})
             raise TypeError("'NoneType' object cannot be interpreted as an integer")
-
+ 
+        sub.current_period_start = datetime.fromtimestamp(period_start_ts, tz=timezone.utc)
         sub.current_period_end = datetime.fromtimestamp(period_end_ts, tz=timezone.utc)
         sub.cancel_at_period_end = stripe_sub.get('cancel_at_period_end', False)
 
@@ -318,7 +340,7 @@ def get_subscription_status(
         select(Subscription).where(Subscription.user_id == user.clerk_user_id)
     ).first()
 
-    project_count = get_project_count_current_month(session, user.clerk_user_id)
+    project_count = get_project_count_current_billing_period(session, user.clerk_user_id)
     current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
 
     plan_limit = settings.plan_limits.get(current_plan_id, 0)
