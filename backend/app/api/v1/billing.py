@@ -15,7 +15,6 @@ from app.db.deps import get_current_user
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/billing")
 
-from typing import Optional # Add this import at the top of the file
 
 def get_project_count_current_billing_period(
     session: Session, user_id: str, subscription: Optional[Subscription]
@@ -208,6 +207,7 @@ async def stripe_webhook(
 def get_customer(
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
+    stripe_client = Depends(get_stripe_client),
 ) -> Dict[str, str]:
     """
     Get existing Stripe customer or create one on-demand for Clerk Direct ID approach.
@@ -298,6 +298,7 @@ def create_portal_session(
 def sync_user_subscription(
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
+    stripe_client = Depends(get_stripe_client),
 ):
     """Endpoint for the frontend to trigger an eager sync after checkout."""
     customer = session.exec(select(Customer).where(Customer.user_id == user.clerk_user_id)).first()
@@ -309,7 +310,7 @@ def sync_user_subscription(
         raise HTTPException(status_code=404, detail="Billing customer not found")
 
     try:
-        sync_stripe_data(session, customer.stripe_customer_id)
+        sync_stripe_data(session, customer.stripe_customer_id, stripe_client)
         logger.info(
             "subscription_sync_completed",
             extra={"user_id": user.clerk_user_id, "customer_id": customer.stripe_customer_id}
@@ -340,7 +341,7 @@ def get_subscription_status(
         select(Subscription).where(Subscription.user_id == user.clerk_user_id)
     ).first()
 
-    project_count = get_project_count_current_billing_period(session, user.clerk_user_id)
+    project_count = get_project_count_current_billing_period(session, user.clerk_user_id, subscription)
     current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
 
     plan_limit = settings.plan_limits.get(current_plan_id, 0)

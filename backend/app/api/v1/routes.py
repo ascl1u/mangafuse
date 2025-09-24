@@ -120,8 +120,16 @@ def readyz(request: Request) -> Dict[str, str]:
     if not check_database_connection(request.app.state.db_engine):
         raise HTTPException(status_code=503, detail="database not reachable")
     settings = get_settings()
-    if not settings.gpu_service_base_url:
-        raise HTTPException(status_code=503, detail="gpu service not configured")
+    # Validate GPU configuration based on provider
+    provider = (settings.gpu_service_provider or "").strip().lower()
+    if provider == "local":
+        if not settings.gpu_service_base_url:
+            raise HTTPException(status_code=503, detail="gpu service not configured")
+    elif provider == "runpod":
+        if not (settings.runpod_api_key and settings.runpod_endpoint_id and settings.public_backend_base_url):
+            raise HTTPException(status_code=503, detail="runpod not configured")
+    else:
+        raise HTTPException(status_code=503, detail="unknown gpu provider")
     return {"status": "ready"}
 
 
@@ -161,7 +169,7 @@ async def create_project(
 ) -> Dict[str, str]:
     """Create a project record and submit GPU job. Returns immediately with 202."""
 
-    from app.api.v1.billing import get_project_count_current_month
+    from app.api.v1.billing import get_project_count_current_billing_period
 
     settings = get_settings()
 
@@ -175,7 +183,7 @@ async def create_project(
     current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
     limit = settings.plan_limits.get(current_plan_id, 0)
 
-    count = get_project_count_current_month(session, user.clerk_user_id)
+    count = get_project_count_current_billing_period(session, user.clerk_user_id, subscription)
 
     if count >= limit:
         raise HTTPException(
