@@ -13,9 +13,9 @@ from sqlalchemy.orm import attributes
 from app.core.config import get_settings
 from app.api.v1.schemas import ApplyEditsRequest, AuthenticatedUser
 from app.db.session import check_database_connection
-from app.db.deps import get_current_user, get_db_session, get_current_subscription
+from app.db.deps import get_current_user, get_db_session
 from sqlmodel import Session, select
-from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, ProcessingMode, Customer, Subscription
+from app.db.models import Project, ProjectArtifact, ArtifactType, ProjectStatus, ProcessingMode, Customer
 from app.core.storage import get_storage_service, StorageService
 from app.worker.queue import get_default_queue, get_high_priority_queue
 from app.worker.tasks import process_translation, process_initial_typeset, retypeset_after_edits
@@ -162,7 +162,6 @@ async def create_project(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
     session: Session = Depends(get_db_session),
-    subscription: Subscription | None = Depends(get_current_subscription),
     gpu_client: GpuClient = Depends(get_gpu_client),
     storage: StorageService = Depends(get_storage_service),
     file: UploadFile | None = File(None),
@@ -180,10 +179,13 @@ async def create_project(
     # Convert depth to ProcessingMode enum
     processing_mode = ProcessingMode.FULL if depth == "full" else ProcessingMode.CLEANED
 
-    current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
+    from app.api.v1.billing import get_or_create_subscription
+    # Ensure a subscription record exists and then compute plan and limits uniformly
+    sub = get_or_create_subscription(session, user.clerk_user_id)
+    current_plan_id = sub.plan_id if sub.plan_id in settings.plan_limits else "free"
     limit = settings.plan_limits.get(current_plan_id, 0)
 
-    count = get_project_count_current_billing_period(session, user.clerk_user_id, subscription)
+    count = get_project_count_current_billing_period(session, user.clerk_user_id, sub)
 
     if count >= limit:
         raise HTTPException(

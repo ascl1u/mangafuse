@@ -108,7 +108,7 @@ class Subscription(SQLModel, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, sa_column=sa.Column(PGUUID(as_uuid=True), primary_key=True, nullable=False))
     user_id: str = Field(sa_column=sa.Column(sa.String(length=191), unique=True, index=True, nullable=False))  # Clerk user ID
-    stripe_subscription_id: str = Field(sa_column=sa.Column(sa.String, unique=True, index=True, nullable=False))
+    stripe_subscription_id: Optional[str] = Field(sa_column=sa.Column(sa.String, unique=True, index=True, nullable=True))
     plan_id: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe Price ID for paid plans; "free" for free tier
     status: str = Field(sa_column=sa.Column(sa.String, nullable=False))  # Stripe subscription status
     current_period_start: datetime = Field(sa_column=sa.Column(sa.DateTime(timezone=True), nullable=False))

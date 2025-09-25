@@ -27,13 +27,13 @@ function UsageBanner() {
 	const getResetDate = (): string | null => {
 		if (!status) return null;
 
-		// Paid subscribers have a specific period_end date from Stripe
-		if (status.plan_id !== 'free' && status.period_end) {
+		// Use period_end when available (anniversary-based for all plans)
+		if (status.period_end) {
 			const date = new Date(status.period_end);
 			return date.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
 		}
 
-		// Free users reset at the end of the calendar month
+		// Fallback: end of current calendar month
 		const now = new Date();
 		const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 		return endOfMonth.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });

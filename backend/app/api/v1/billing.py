@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 
 import stripe
@@ -16,35 +16,54 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/billing")
 
 
+def get_or_create_subscription(session: Session, user_id: str) -> Subscription:
+    """Gets a user's subscription or creates a free one on-demand."""
+    subscription = session.exec(
+        select(Subscription).where(Subscription.user_id == user_id)
+    ).first()
+
+    if subscription:
+        return subscription
+
+    # Create a new free subscription record
+    now = datetime.now(timezone.utc)
+    free_sub = Subscription(
+        user_id=user_id,
+        stripe_subscription_id=None,
+        plan_id="free",
+        status="active",
+        current_period_start=now,
+        current_period_end=now + timedelta(days=30),
+        cancel_at_period_end=False
+    )
+    session.add(free_sub)
+    session.commit()
+    session.refresh(free_sub)
+    
+    logger.info("free_subscription_created", extra={"user_id": user_id})
+    return free_sub
+
 def get_project_count_current_billing_period(
     session: Session, user_id: str, subscription: Optional[Subscription]
 ) -> int:
     """
     Counts projects created by a user within their current billing period.
-    - For paid subscribers, this is the period defined by their Stripe subscription.
-    - For free users, this falls back to the current calendar month (UTC).
+    This is now anniversary-based for all users, including free tier.
     """
-    if subscription and subscription.plan_id != "free":
-        # Paid user: Use their personal billing cycle from the subscription record.
-        start_date = subscription.current_period_start
-        end_date = subscription.current_period_end
-        
-        statement = (
-            select(func.count(Project.id))
-            .where(Project.user_id == user_id)
-            .where(Project.created_at >= start_date)
-            .where(Project.created_at < end_date)
-        )
-    else:
-        # Free user: Use the current calendar month.
-        start_of_month = func.date_trunc('month', func.now())
-        
-        statement = (
-            select(func.count(Project.id))
-            .where(Project.user_id == user_id)
-            .where(Project.created_at >= start_of_month)
-        )
-        
+    # Ensure a subscription record exists for the user, creating one if necessary.
+    sub = subscription or get_or_create_subscription(session, user_id)
+    
+    # Unconditionally use the anniversary logic from the subscription record.
+    start_date = sub.current_period_start
+    end_date = sub.current_period_end
+    
+    statement = (
+        select(func.count(Project.id))
+        .where(Project.user_id == user_id)
+        .where(Project.created_at >= start_date)
+        .where(Project.created_at < end_date)
+    )
+    
     count = session.exec(statement).one()
     return int(count)
 
@@ -112,10 +131,21 @@ def sync_stripe_data(session: Session, stripe_customer_id: str, stripe_client):
             return
 
         if not subscriptions.data:
+            # Convert to or ensure a free subscription instead of deleting the record
             existing_sub = session.exec(select(Subscription).where(Subscription.user_id == customer.user_id)).first()
             if existing_sub:
-                session.delete(existing_sub)
-            session.commit()
+                now = datetime.now(timezone.utc)
+                existing_sub.stripe_subscription_id = None
+                existing_sub.plan_id = "free"
+                existing_sub.status = "active"
+                existing_sub.current_period_start = now
+                existing_sub.current_period_end = now + timedelta(days=30)
+                existing_sub.cancel_at_period_end = False
+                session.add(existing_sub)
+                session.commit()
+            else:
+                # Ensure a free subscription exists
+                get_or_create_subscription(session, customer.user_id)
             return
 
         stripe_sub = subscriptions.data[0]
@@ -337,19 +367,17 @@ def get_subscription_status(
     Fetches the user's subscription status and current monthly project usage.
     """
     settings = get_settings()
-    subscription = session.exec(
-        select(Subscription).where(Subscription.user_id == user.clerk_user_id)
-    ).first()
+    subscription = get_or_create_subscription(session, user.clerk_user_id)
 
     project_count = get_project_count_current_billing_period(session, user.clerk_user_id, subscription)
-    current_plan_id = subscription.plan_id if subscription and subscription.plan_id in settings.plan_limits else "free"
+    current_plan_id = subscription.plan_id if subscription.plan_id in settings.plan_limits else "free"
 
     plan_limit = settings.plan_limits.get(current_plan_id, 0)
 
     return {
         "plan_id": current_plan_id,
-        "status": subscription.status if subscription else "active",
-        "period_end": subscription.current_period_end if subscription else None,
+        "status": subscription.status,
+        "period_end": subscription.current_period_end,
         "project_count": project_count,
         "project_limit": plan_limit,
     }
