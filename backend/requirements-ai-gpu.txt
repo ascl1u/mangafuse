@@ -6,6 +6,7 @@ python-multipart
 pydantic-settings
 python-dotenv
 httpx
+runpod
 
 # -- Cloud Storage (for presigned URLs) --
 boto3
