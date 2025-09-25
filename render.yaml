@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: mangafuse-backend
+    name: mangafuse
     env: python
     rootDir: backend
     plan: starter
@@ -11,10 +11,7 @@ services:
     startCommand: bash start.sh
     envVars:
       # Attach your secret group created in Render UI with DB, Redis, Clerk, R2, etc.
-      - fromGroup: mangafuse-prod
-      # Pin Python version explicitly (optional)
-      - key: PYTHON_VERSION
-        value: 3.11.7
+      - fromGroup: mangafuse-env
 
 # Optional: define the env var group here only if you want non-secret defaults tracked in Git.
 # Typically you'll create the group in Render UI named "mangafuse-prod" and add secrets there.
