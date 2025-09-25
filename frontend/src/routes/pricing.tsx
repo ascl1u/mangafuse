@@ -100,7 +100,7 @@ function PricingPage() {
           <p className="text-gray-600 mt-2">Get started for free</p>
           <div className="text-3xl font-bold my-4">$0 <span className="text-lg font-normal">/ month</span></div>
           <ul className="space-y-2 text-sm text-gray-700">
-            <li>✅ 5 Projects / month</li>
+            <li>✅ 5 projects / month</li>
             <li>✅ Community access</li>
             <li>✅ Basic support</li>
           </ul>
