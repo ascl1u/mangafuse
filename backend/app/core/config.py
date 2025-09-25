@@ -130,7 +130,19 @@ class Settings(BaseSettings):
     gpu_service_provider: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("GPU_SERVICE_PROVIDER"),
-        description="The provider of the GPU service, e.g. 'local' or 'modal'",
+        description="The provider of the GPU service, e.g. 'local' or 'runpod'",
+    )
+
+    # Runpod serverless configuration
+    runpod_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("RUNPOD_API_KEY"),
+        description="Runpod API key for invoking serverless endpoints",
+    )
+    runpod_endpoint_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("RUNPOD_ENDPOINT_ID"),
+        description="Runpod serverless endpoint ID to invoke",
     )
 
     # Stripe configuration

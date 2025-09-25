@@ -41,8 +41,7 @@ PY
 
 
 # --- Stage 2: Final Production Image ---
-# Hardcoded to your local CUDA 12.9 environment.
-FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -82,4 +81,8 @@ ENV HF_HOME=/root/.cache/huggingface
 
 EXPOSE 5001
 
-CMD ["python3", "-m", "uvicorn", "backend.app.gpu_service.main:app", "--host", "0.0.0.0", "--port", "5001"]
+# Entrypoint supports two modes controlled by RUN_MODE env var:
+# - RUN_MODE=serverless -> start Runpod serverless worker using runpod_handler
+# - (default)          -> start local GPU FastAPI via uvicorn
+ENV RUN_MODE=uvicorn
+CMD ["python3", "-m", "backend.app.gpu_service.entrypoint"]

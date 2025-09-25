@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
-from pathlib import Path
-import json
-import logging
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks
 from pydantic import BaseModel
 
-from app.core.paths import get_artifacts_root, get_job_dir, get_assets_root
-from app.pipeline.orchestrator import run_pipeline
+from app.core.paths import get_assets_root
 from app.pipeline.model_registry import ModelRegistry
+from app.gpu_service.runner import run_and_callback
 
 
 class JobInput(BaseModel):
@@ -30,124 +27,16 @@ class SubmitJobBody(BaseModel):
 app = FastAPI(title="MangaFuse GPU Service", version="0.1.0")
 
 
-def _write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
-
-
-def _read_bytes(path: Path) -> bytes:
-    with open(path, "rb") as f:
-        return f.read()
-
-
 def _run_pipeline_and_callback(body: SubmitJobBody) -> None:
-    job_id = body.job_id
-    mode = body.mode if body.mode in ("cleaned", "full") else "full"
-    job_dir = get_job_dir(job_id)
-    artifacts_root = get_artifacts_root()
-    status = "COMPLETED"
-    error_detail = None
-
-    try:
-        # Resolve/download input image to job_dir/source_image
-        dst_path = job_dir / "source_image"
-        dst_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Preferred: download via presigned GET when provided
-        if body.input.download_url:
-            import httpx
-            try:
-                with httpx.Client(timeout=30.0) as client:
-                    resp = client.get(body.input.download_url)
-                    resp.raise_for_status()
-                    _write_bytes(dst_path, resp.content)
-            except Exception as exc:
-                raise ValueError(f"failed to download input: {exc}")
-        else:
-            # Fallbacks for local/dev
-            if body.input.path:
-                src_path = Path(body.input.path)
-            elif body.input.storage_key:
-                src_path = artifacts_root / body.input.storage_key
-            else:
-                raise ValueError("missing input path or storage_key")
-            if not src_path.exists():
-                raise ValueError("input not found")
-            _write_bytes(dst_path, _read_bytes(src_path))
-
-        # Run pipeline without translate or typeset; produce cleaned + text.json (+ optional overlay)
-        # Pull preloaded models from app state (may be None in dev)
-        models = getattr(app.state, "models", None)
-
-        result = run_pipeline(
-            job_id=job_id,
-            image_path=str(dst_path),
-            depth=mode,
-            include_typeset=False,
-            include_translate=False,
-            models=models,
-        )
-
-        # If outputs with presigned PUTs were provided, upload via HTTP PUT and then remove local files
-        if body.outputs:
-            import httpx
-            artifacts = result.get("artifacts", {})
-            name_to_path = {
-                "CLEANED_PAGE": artifacts.get("CLEANED_PAGE"),
-                "TEXT_JSON": result.get("paths", {}).get("json"),
-            }
-            with httpx.Client(timeout=30.0) as client:
-                for name, spec in body.outputs.items():
-                    p = name_to_path.get(name)
-                    if not p or not Path(p).exists():
-                        continue
-                    with open(p, "rb") as f:
-                        url = spec.get("put_url", "")
-                        if url:
-                            client.put(url, content=f.read())
-    except Exception as e:
-        status = "FAILED"
-        error_detail = str(e)
-        logging.getLogger(__name__).exception("pipeline_failed", extra={"job_id": job_id})
-
-    # Always report artifacts in callback payload for consistent behavior between local dev and production
-    if body.callback_url:
-        try:
-            import httpx
-
-            payload = {"job_id": job_id, "status": status}
-            if error_detail:
-                payload["error"] = error_detail
-
-            if status == "COMPLETED":
-                # Construct the callback payload
-                artifacts_to_report = {}
-
-                if body.outputs:
-                    # For production, the source of truth is the presigned URL contract.
-                    artifacts_to_report = {name: spec.get("storage_key") for name, spec in body.outputs.items() if spec.get("storage_key")}
-                else:
-                    # For local dev, report the relative paths as storage keys.
-                    json_path_str = result.get("paths", {}).get("json")
-                    if json_path_str and Path(json_path_str).exists():
-                        artifacts_to_report["TEXT_JSON"] = str(Path(json_path_str).relative_to(artifacts_root)).replace(
-                            "\\", "/"
-                        )
-
-                    cleaned_path_str = result.get("paths", {}).get("cleaned")
-                    if cleaned_path_str and Path(cleaned_path_str).exists():
-                        artifacts_to_report["CLEANED_PAGE"] = str(Path(cleaned_path_str).relative_to(artifacts_root)).replace(
-                            "\\", "/"
-                        )
-
-                if artifacts_to_report:
-                    payload["artifacts"] = artifacts_to_report
-
-            with httpx.Client(timeout=10.0) as client:
-                client.post(body.callback_url, json=payload)
-        except Exception:
-            logging.getLogger(__name__).exception("callback_failed", extra={"job_id": job_id})
+    run_and_callback(
+        job_id=body.job_id,
+        mode=body.mode,
+        job_input=body.input.model_dump(),
+        outputs=body.outputs,
+        callback_url=body.callback_url,
+        callback_secret=None,
+        models=getattr(app.state, "models", None),
+    )
 
 
 @app.post("/jobs", status_code=202)

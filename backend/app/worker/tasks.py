@@ -125,6 +125,44 @@ def _ensure_cleaned_and_text(job_id: str, artifacts: Dict[str, str] | None = Non
     json_path = job_dir / "text.json"
 
     storage = get_storage_service()
+    # If no artifacts mapping provided, fetch canonical storage keys from the database
+    if not artifacts:
+        try:
+            with worker_session_scope() as session:
+                cleaned_row = session.exec(
+                    select(ProjectArtifact).where(
+                        ProjectArtifact.project_id == job_id,
+                        ProjectArtifact.artifact_type == ArtifactType.CLEANED_PAGE,
+                    )
+                ).first()
+                text_row = session.exec(
+                    select(ProjectArtifact).where(
+                        ProjectArtifact.project_id == job_id,
+                        ProjectArtifact.artifact_type == ArtifactType.TEXT_JSON,
+                    )
+                ).first()
+
+                cleaned_key = cleaned_row.storage_key if (cleaned_row and cleaned_row.storage_key) else None
+                text_key = text_row.storage_key if (text_row and text_row.storage_key) else None
+                has_cleaned = cleaned_key is not None
+                has_text_json = text_key is not None
+
+            artifacts = {}
+            if cleaned_key:
+                artifacts["CLEANED_PAGE"] = cleaned_key
+            if text_key:
+                artifacts["TEXT_JSON"] = text_key
+            logger.info(
+                "artifacts_fetched_from_db",
+                extra={
+                    "project_id": job_id,
+                    "has_cleaned": has_cleaned,
+                    "has_text_json": has_text_json,
+                },
+            )
+        except Exception:
+            logger.exception("artifact_lookup_failed", extra={"project_id": job_id})
+
     if artifacts:
         if artifacts.get("CLEANED_PAGE") and not cleaned_path.exists():
             with open(cleaned_path, "wb") as wf:
@@ -136,6 +174,15 @@ def _ensure_cleaned_and_text(job_id: str, artifacts: Dict[str, str] | None = Non
                     wf.write(rf.read())
 
     if not cleaned_path.exists() or not json_path.exists():
+        missing: list[str] = []
+        if not cleaned_path.exists():
+            missing.append("CLEANED_PAGE")
+        if not json_path.exists():
+            missing.append("TEXT_JSON")
+        logger.error(
+            "required_artifacts_missing",
+            extra={"project_id": job_id, "missing": ",".join(missing)},
+        )
         raise RuntimeError("missing cleaned or text.json from GPU result")
 
     return cleaned_path, json_path
