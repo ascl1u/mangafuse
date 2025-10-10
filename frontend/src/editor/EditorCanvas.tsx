@@ -55,7 +55,7 @@ function getErrorStyle(errorType: 'translation' | 'typeset'): { strokeColor: str
 
 export function EditorCanvas({ editor, selectedId, onSelect, pendingEditIds, disabled, revision }: Props) {
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
-  const isAbsolute = (url?: string) => !!url && /^(?:https?:)?\/\//i.test(url)
+  const isAbsolute = (url?: string) => !!url && ( /^(?:https?:)?\/\//i.test(url) || url.startsWith('/') )
   const imageUrl = editor.image_url
     ? (isAbsolute(editor.image_url) ? editor.image_url : `${API_BASE}${editor.image_url}`)
     : undefined

@@ -32,7 +32,7 @@ type Props = {
 
 export function SelectedBubblePanel({ editor, selectedId, edits, onChangeText }: Props) {
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
-  const isAbsolute = (url?: string) => !!url && /^(?:https?:)?\/\//i.test(url)
+  const isAbsolute = (url?: string) => !!url && ( /^(?:https?:)?\/\//i.test(url) || url.startsWith('/') )
   const selected = useMemo(() => editor?.bubbles.find((b) => b.id === selectedId), [editor, selectedId])
   if (!editor) return null
   if (!selected) {
