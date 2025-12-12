@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { SignUpButton } from '@clerk/clerk-react'
 import type { EditorPayload } from '../types'
 import { EditorCanvas } from '../editor/EditorCanvas'
+import { EXTERNAL_URLS } from '../constants'
 
 export function GuestDemo() {
   // State to track the current stage of the demo: 'raw', 'cleaned', or 'final'
@@ -33,7 +34,19 @@ export function GuestDemo() {
     <div className="space-y-4">
       <div className="p-4 text-center bg-blue-50 text-blue-800 rounded border border-blue-200">
         <h2 className="font-bold">Welcome to MangaFuse!</h2>
-        <p className="text-sm">This is an interactive demo. Follow the steps to see how it works, then sign up to try your own images.</p>
+        <p className="text-sm">
+          Follow the steps to see how it works, then sign up to try your own images.{' '}
+          If you would like to make contributions, check out the{' '}
+          <a
+            href={EXTERNAL_URLS.github}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-blue-900"
+          >
+            GitHub repo
+          </a>
+          .
+        </p>
       </div>
 
       <div className="grid gap-6" style={{ gridTemplateColumns: '320px 1fr', columnGap: 24 }}>

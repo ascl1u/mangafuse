@@ -17,6 +17,15 @@ export function Footer() {
             <img src="/icons/x.svg" alt="" aria-hidden="true" className="h-5 w-5" />
           </a>
           <a
+            href={EXTERNAL_URLS.github}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub"
+            className="text-gray-600"
+          >
+            <img src="/icons/github.svg" alt="" aria-hidden="true" className="h-5 w-5" />
+          </a>
+          <a
             href={EXTERNAL_URLS.discord}
             target="_blank"
             rel="noopener noreferrer"
